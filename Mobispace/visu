@@ -1,0 +1,28 @@
+import geopandas as gpd
+import matplotlib.pyplot as plt
+
+# ✅ 1. Charger les fichiers
+cells_path = r"C:\Users\22302668\Desktop\CapsuleV2\my-home-is-my-secret\my-home-is-my-secret-master\input\cells.shp"
+trajectories_path = r"C:\Users\22302668\Desktop\CapsuleV2\my-home-is-my-secret\my-home-is-my-secret-master\input\synthetic_trajectories_hel.shp"
+
+# Charger les fichiers
+cells = gpd.read_file(cells_path)
+trajectories = gpd.read_file(trajectories_path)
+
+# Fixer manuellement les CRS d'origine
+cells.set_crs(epsg=4326, inplace=True)             # Les cellules sont en WGS84
+trajectories.set_crs(epsg=5048, inplace=True)      # On confirme le CRS projeté d'origine
+
+# Reprojeter les trajectoires vers celui des cellules
+trajectories = trajectories.to_crs(cells.crs)
+
+# Affichage
+fig, ax = plt.subplots(figsize=(10, 10))
+cells.plot(ax=ax, facecolor="none", edgecolor="blue")
+trajectories.plot(ax=ax, color="red", linewidth=0.5, label="Trajectories")
+plt.title("Trajectories over Cells")
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
+plt.legend()
+plt.grid(True)
+plt.show()

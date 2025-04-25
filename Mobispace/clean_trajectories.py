@@ -92,8 +92,8 @@ def visualize_trajectories(gps_gdf, cleaned_gdf):
     return map_original * map_cleaned
 
 def save_cleaned_trajectories(cleaned_gdf, data_folder):
-    output_path = os.path.join(data_folder, "Cleaned_Trajectories.csv")
-    cleaned_gdf.to_csv(output_path, index=False)
+    output_path = os.path.join(data_folder, "Cleaned_Trajectories.gpkg")
+    cleaned_gdf.to_file(output_path, driver='GPKG', layer='trajectories')
     return output_path
 
 def visualize_single_trajectory(trajectory_collection, cleaned_trajectories):
