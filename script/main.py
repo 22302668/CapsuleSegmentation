@@ -1,40 +1,42 @@
 from load_and_preprocess import load_data_and_prepare
-from clustering_hdbscan import cluster_and_visualize
-from detect_stops_and_analyze import detect_stops_and_generate_figures
 from verify_activities import verify_activities
 from generate_report import generate_full_report
-from automatic_cluster_labeling import assign_cluster_labels_kmeans
+from movingpandas_stop_detection import detect_stops_with_movingpandas
+from detect_stops_and_analyze import generate_figures
+from verify_stop_activities import verify_stop_activities
 
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import os
-
+import pandas as pd
 
 def main():
-    # 1. Charger les variables d'environnement et créer engine une seule fois
-    load_dotenv()
-    url = f"postgresql+psycopg2://{os.getenv('PG_USER')}:{os.getenv('PG_PASSWORD')}@{os.getenv('PG_HOST')}:{os.getenv('PG_PORT')}/{os.getenv('PG_DB')}"
-    engine = create_engine(url)
+    df = load_data_and_prepare()
 
-    print("\n🚀 Chargement des données...")
-    df = load_data_and_prepare(engine)
+    # # 1. Charger les variables d'environnement et créer engine
+    # load_dotenv()
+    # url = f"postgresql+psycopg2://{os.getenv('PG_USER')}:{os.getenv('PG_PASSWORD')}@{os.getenv('PG_HOST')}:{os.getenv('PG_PORT')}/{os.getenv('PG_DB')}"
+    # engine = create_engine(url)
 
-    print("\n🧠 Clustering HDBSCAN...")
-    df, clustering_figures = cluster_and_visualize(df)
-    df = assign_cluster_labels_kmeans(df)
+    # print("\nChargement des données...")
+    # df = load_data_and_prepare(engine)
 
-    print("\n🏃 Détection des stops et analyse des mouvements...")
-    df, stops_summary, stops_figures = detect_stops_and_generate_figures(df)
+    print("\nDétection des stops avec MovingPandas...")
+    stops_summary = detect_stops_with_movingpandas(df, min_duration_minutes=3, max_diameter_meters=100)
 
-    print("\n🧩 Vérification des activités...")
-    df, activities_crosstab = verify_activities(df, engine)
+    print("\nGénération des figures statistiques...")
+    figures_base64 = generate_figures(df, stops_summary)
 
-    print("\n📄 Fusion des figures et génération du rapport...")
-    all_figures = {**clustering_figures, **stops_figures}
-    generate_full_report(df, stops_summary, all_figures, activities_crosstab)
+    print("\nVérification des activités...")
+    df, activities_crosstab = verify_activities(df, engine=None)
 
-    print("\n✅ Pipeline terminé avec succès !")
+    print("\nVérification des activités pendant les stops...")
+    stops_summary, stop_activity_crosstab = verify_stop_activities(stops_summary, engine=None)
 
+    print("\nFusion des figures et génération du rapport...")
+    generate_full_report(df, stops_summary, figures_base64)
+
+    print("\nPipeline terminé avec succès !")
 
 if __name__ == "__main__":
     main()

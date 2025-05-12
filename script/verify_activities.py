@@ -1,50 +1,43 @@
 import pandas as pd
 from sqlalchemy import text
 
-
-def verify_activities(df, engine, participant_id='9999932'):
+def verify_activities(df, engine=None, participant_id='999996'):
     """
-    Attribue l'activité théorique à chaque point GPS en fonction de la base de données,
-    et génère un tableau croisant Cluster HDBSCAN vs Activité détectée.
-
-    Args:
-        df (pd.DataFrame): Données GPS traitées.
-        engine (sqlalchemy.Engine): Connexion SQLAlchemy à la base de données.
-        participant_id (str): ID du participant à utiliser.
-
-    Returns:
-        df (pd.DataFrame): DataFrame enrichi avec colonne 'activity_detected'.
-        cross_tab (pd.DataFrame): Tableau croisant cluster_label vs activity_detected.
+    Attribue l'activité théorique à chaque point GPS à partir de la BDD,
+    et génère un tableau croisant movement_type vs activité détectée (MovingPandas).
     """
+    path = r"C:\Users\22302668\Desktop\CapsuleV2\participant-data-semain43\Activities\Participant9999965-activities.csv"
+    #activities = pd.read_csv(path)
+    df_activities = pd.read_csv(path)
+    # # Charger les activités depuis la base
+    # with engine.connect() as conn:
+    #     df_activities = pd.read_sql_query(text(f"""
+    #         SELECT participant_virtual_id, timestamp, activity
+    #         FROM detected_activities_record_based_v3
+    #         WHERE participant_virtual_id = '{participant_id}'
+    #         ORDER BY timestamp ASC
+    #     """), con=conn)
 
-    # Charger les activités détectées depuis la base
-    with engine.connect() as conn:
-        df_activities = pd.read_sql_query(text(f"""
-            SELECT participant_virtual_id, timestamp, activity
-            FROM detected_activities_record_based_v3
-            WHERE participant_virtual_id = '{participant_id}'
-            ORDER BY timestamp ASC
-        """), con=conn)
+    # Formatage des timestamps
+    #df_activities['timestamp'] = pd.to_datetime(df_activities['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
+    df_activities['timestamp'] = pd.to_datetime(df_activities['time'], utc=True).dt.tz_convert('Europe/Paris')
 
-    # S'assurer que les dates sont au bon format
-    df_activities['timestamp'] = pd.to_datetime(df_activities['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
-
-    # Attribuer à chaque point GPS l'activité la plus récente
     df = df.sort_values('timestamp')
     df_activities = df_activities.rename(columns={'timestamp': 'activity_timestamp'})
 
+    # Merge asof pour récupérer l'activité correspondante à chaque point GPS
     df['activity_detected'] = pd.merge_asof(
         df,
         df_activities.sort_values('activity_timestamp'),
         left_on='timestamp',
         right_on='activity_timestamp',
         direction='backward'
-    )['activity']
+    )['activity'].fillna('Unknown')
 
-    # Remplacer les activités manquantes par "Unknown"
-    df['activity_detected'] = df['activity_detected'].fillna('Unknown')
-
-    # Générer le tableau croisant cluster vs activité
-    cross_tab = pd.crosstab(df['cluster_label'], df['activity_detected'])
+    # Générer le tableau croisé
+    if 'movement_type' in df.columns:
+        cross_tab = pd.crosstab(df['movement_type'], df['activity_detected'])
+    else:
+        cross_tab = None
 
     return df, cross_tab
