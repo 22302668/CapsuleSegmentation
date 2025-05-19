@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def merge_stops(stops_df, epsilon_lat=0.00035, epsilon_lon=0.00045):
     """
     Regroupe les arrêts spatialement proches en une bounding box.
