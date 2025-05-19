@@ -5,11 +5,7 @@ from folium.plugins import HeatMap, MiniMap
 import pandas as pd
 import matplotlib.pyplot as plt
 
-
-def generate_interactive_map(df, stops_summary=None):
-    if df.empty:
-        return ""
-
+def generate_interactive_map(df, stops_summary, grouped_stops, classified_stops):
     center_lat = df['lat'].mean()
     center_lon = df['lon'].mean()
     m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles='cartodbpositron')
@@ -18,7 +14,7 @@ def generate_interactive_map(df, stops_summary=None):
     if not df[['lat', 'lon']].dropna().empty:
         path = df[['lat', 'lon']].dropna().values.tolist()
         folium.PolyLine(path, color='black', weight=3, opacity=0.6).add_to(
-            folium.FeatureGroup(name="🛣️ Trajet complet", show=True).add_to(m)
+            folium.FeatureGroup(name="🚣️ Trajet complet", show=True).add_to(m)
         )
 
     heat_data = df[['lat', 'lon']].dropna().values.tolist()
@@ -29,7 +25,7 @@ def generate_interactive_map(df, stops_summary=None):
 
     if stops_summary is not None and not stops_summary.empty:
         stops_summary['day'] = pd.to_datetime(stops_summary['start_time']).dt.date
-        fg_all = folium.FeatureGroup(name=f"🛑 Tous les stops ({len(stops_summary)})", show=True)
+        fg_all = folium.FeatureGroup(name=f"🚩 Tous les stops ({len(stops_summary)})", show=True)
 
         for _, row in stops_summary.iterrows():
             duration_min = row['duration_s'] / 60
@@ -56,7 +52,7 @@ def generate_interactive_map(df, stops_summary=None):
         fg_all.add_to(m)
 
         for day, group in stops_summary.groupby('day'):
-            fg_day = folium.FeatureGroup(name=f"📆 Stops du {day} ({len(group)})", show=False)
+            fg_day = folium.FeatureGroup(name=f"📆 Stops du {day}({len(group)})", show=False)
             for _, row in group.iterrows():
                 duration_min = row['duration_s'] / 60
                 radius = min(10, max(3, duration_min / 2))
@@ -82,16 +78,67 @@ def generate_interactive_map(df, stops_summary=None):
                 ).add_to(fg_day)
             fg_day.add_to(m)
 
+    if grouped_stops is not None and not grouped_stops.empty:
+        fg_grouped = folium.FeatureGroup(name=f"📍 Stops regroupés ({len(grouped_stops)})", show=True)
+        for _, row in grouped_stops.iterrows():
+            popup = folium.Popup(
+                f"<b>STOP REGROUPÉ</b><br>"
+                f"Début : {row['start_time']}<br>"
+                f"Fin : {row['end_time']}<br>"
+                f"Durée : {int(row['duration_s'])} s<br>"
+                f"Points fusionnés : {row.get('group_size', 'N/A')}",
+                max_width=300
+            )
+            folium.CircleMarker(
+                location=[row['lat'], row['lon']],
+                radius=6,
+                color='black',
+                fill=True,
+                fill_color='white',
+                fill_opacity=1,
+                popup=popup
+            ).add_to(fg_grouped)
+        fg_grouped.add_to(m)
+
+    if classified_stops is not None and 'place_type' in classified_stops.columns:
+        fg_place_type = folium.FeatureGroup(name="🏠 Lieux classifiés (Home/Work)", show=True)
+        for _, row in classified_stops.iterrows():
+            color = {
+                'Home': 'blue',
+                'Work': 'purple',
+                'Unknown': 'gray'
+            }.get(row['place_type'], 'black')
+            intervals = "".join(
+                f"<li>{s} → {e}</li>"
+                for s, e in zip(row['merged_intervals'], row['merged_ends'])
+            )
+            popup = folium.Popup(
+                f"<b>Lieu détecté :</b> <span style='color:{color}'>{row['place_type']}</span><br>"
+                f"<b>Durée totale :</b> {int(row['duration_s'] // 60)} min<br>"
+                f"<b>⏱️ Intervalles :</b><ul>{intervals}</ul>",
+                max_width=300
+            )
+
+            folium.CircleMarker(
+                location=[row['lat'], row['lon']],
+                radius=9,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.9,
+                popup=popup
+            ).add_to(fg_place_type)
+        fg_place_type.add_to(m)
+
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
 
-
-def generate_full_report(df, stops_summary, figures_base64):
+def generate_full_report(df, stops_summary, figures_base64,grouped_stops, classified_stops):
     os.makedirs("data", exist_ok=True)
     report_path = os.path.join("data", "rapport_stops_movingpandas.html")
     generation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    map_html = generate_interactive_map(df, stops_summary)
+    map_html = generate_interactive_map(df, stops_summary, grouped_stops, classified_stops)
 
     nb_points = len(df)
     nb_stops = len(stops_summary)
@@ -169,13 +216,6 @@ def generate_full_report(df, stops_summary, figures_base64):
 
     """
 
-    if 'stop_activity_pie' in figures_base64:
-        html += f"""
-        <hr>
-        <h4>🧩 Activités détectées pendant les stops</h4>
-        <img src="data:image/png;base64,{figures_base64['stop_activity_pie']}" width="600"/><br>
-        """
-
     if 'stop_timeline' in figures_base64:
         html += f"""
         <hr>
@@ -189,6 +229,13 @@ def generate_full_report(df, stops_summary, figures_base64):
         <h4>Durée moyenne des arrêts par activité</h4>
         <img src="data:image/png;base64,{figures_base64['stop_mean_duration']}" width="700"/><br>
         """
+    if grouped_stops is not None:
+        html += "<h3>🧩 Stops regroupés (Bounding Box)</h3>"
+        html += grouped_stops[['start_time', 'end_time', 'duration_s', 'lat', 'lon',  'group_size']].to_html(index=False)
+    
+    if classified_stops is not None and 'place_type' in classified_stops.columns:
+        html += "<h3>🏷️ Lieux classifiés : Home, Work, Unknown</h3>"
+        html += classified_stops[['start_time', 'end_time', 'duration_s', 'lat', 'lon', 'place_type']].to_html(index=False)
 
     if 'stop_heatmap' in figures_base64:
         html += f"""
@@ -199,7 +246,7 @@ def generate_full_report(df, stops_summary, figures_base64):
     if 'stop_weekday_vs_weekend' in figures_base64:
         html += f"""
         <hr>
-        <h4>⏰ Comparaison des arrêts par heure – Semaine vs Weekend</h4>
+        <h4>⏰ Comparaison des arrêts – Semaine vs Weekend</h4>
         <img src="data:image/png;base64,{figures_base64['stop_weekday_vs_weekend']}" width="800"/><br>
         """
         if 'stops_dispersion' in figures_base64:
@@ -211,6 +258,12 @@ def generate_full_report(df, stops_summary, figures_base64):
             <h4>Nombre de stops par heure</h4>
             <img src="data:image/png;base64,{figures_base64['stops_par_heure']}" width="600"/><br>
             """
+    if 'points_weekdays_vs_weekends' in figures_base64:
+        html += f"""
+        <hr>
+        <h4>📊 Répartition des points GPS – Semaine vs Weekend</h4>
+        <img src="data:image/png;base64,{figures_base64['points_weekdays_vs_weekends']}" width="800"/><br>
+        """
 
     if 'points_par_jour' in figures_base64:
         html += f"""

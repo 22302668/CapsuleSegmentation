@@ -64,6 +64,38 @@ def plot_daily_hourly_stop_patterns(stops_summary):
     fig.tight_layout()
     return fig_to_base64(fig)
 
+def plot_daily_hourly_point_patterns(df):
+    df = df[df['timestamp'].notna()].copy()
+    df['hour'] = df['timestamp'].dt.hour
+    df['date'] = df['timestamp'].dt.date
+    df['dayofweek'] = df['timestamp'].dt.dayofweek
+    df['is_weekend'] = df['dayofweek'] >= 5
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+
+    # Partie semaine
+    for date, group in df[~df['is_weekend']].groupby('date'):
+        hourly = group.groupby('hour').size()
+        if hourly.sum() > 10:
+            ax1.plot(hourly.index, hourly, label=str(date))
+    ax1.set_title("Semaine")
+    ax1.set_ylabel("Nombre de points")
+    ax1.legend(loc='upper right', fontsize='small')
+
+    # Partie weekend
+    for date, group in df[df['is_weekend']].groupby('date'):
+        hourly = group.groupby('hour').size()
+        if hourly.sum() > 10:
+            ax2.plot(hourly.index, hourly, label=str(date))
+    ax2.set_title("Weekend")
+    ax2.set_ylabel("Nombre de points")
+    ax2.set_xlabel("Heure")
+    ax2.legend(loc='upper right', fontsize='small')
+
+    fig.tight_layout()
+    return fig_to_base64(fig)
+
+
 def generate_figures(df, stops_summary=None):
     figures_base64 = {}
 
@@ -121,6 +153,7 @@ def generate_figures(df, stops_summary=None):
         figures_base64['stops_par_heure'] = fig_to_base64(fig9)
 
         figures_base64['stop_weekday_vs_weekend'] = plot_daily_hourly_stop_patterns(stops_summary)
+        figures_base64['points_weekdays_vs_weekends'] = plot_daily_hourly_point_patterns(df)
 
     figures_base64.update(generate_frequency_analysis(df))
     plt.close('all')

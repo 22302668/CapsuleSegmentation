@@ -5,7 +5,7 @@ from shapely.geometry import Point
 import movingpandas as mpd
 from datetime import timedelta
 
-def detect_stops_with_movingpandas(df, min_duration_minutes=1, max_diameter_meters=30):
+def detect_stops_with_movingpandas(df, min_duration_minutes=8, max_diameter_meters=30):
     """
     Détecte les stops avec MovingPandas à partir d'un DataFrame contenant 'lat', 'lon', 'timestamp'.
     
@@ -17,8 +17,8 @@ def detect_stops_with_movingpandas(df, min_duration_minutes=1, max_diameter_mete
     Returns:
         pd.DataFrame: Liste des stops détectés avec lat/lon, temps de début/fin, durée
     """
-    print(f"➡️  Points d'entrée : {len(df)}")  # Affiche le nombre total de points GPS en entrée
-    print(f"➡️  Timestamps min/max : {df['timestamp'].min()} / {df['timestamp'].max()}")  # Affiche les bornes temporelles du dataset
+    print(f"Points d'entrée : {len(df)}")  # Affiche le nombre total de points GPS en entrée
+    print(f"Timestamps min/max : {df['timestamp'].min()} / {df['timestamp'].max()}")  # Affiche les bornes temporelles du dataset
 
     # Conversion en GeoDataFrame avec géométrie
     df['geometry'] = df.apply(lambda row: Point(row['lon'], row['lat']), axis=1)  # Crée une géométrie Point pour chaque ligne à partir de lon/lat
@@ -34,8 +34,8 @@ def detect_stops_with_movingpandas(df, min_duration_minutes=1, max_diameter_mete
         max_diameter=max_diameter_meters  # Diamètre spatial maximal pour considérer un arrêt
     )
 
-    print(f"➡️  {len(stop_points)} stops bruts détectés par MovingPandas")  # Affiche le nombre d’arrêts trouvés
-    print("🧪 Colonnes retournées :", stop_points.columns.tolist())  # Affiche les noms des colonnes du résultat
+    print(f"{len(stop_points)} stops bruts détectés par MovingPandas")  # Affiche le nombre d’arrêts trouvés
+    print("Colonnes retournées :", stop_points.columns.tolist())  # Affiche les noms des colonnes du résultat
 
     # Identifier dynamiquement les colonnes de début et fin
     if stop_points.empty:
@@ -55,7 +55,7 @@ def detect_stops_with_movingpandas(df, min_duration_minutes=1, max_diameter_mete
     stop_points['lat'] = stop_points['stop_geom'].y  # Extrait la latitude à partir de la géométrie
     stop_points['lon'] = stop_points['stop_geom'].x  # Extrait la longitude à partir de la géométrie
 
-    print("\n🛑 Aperçu des stops détectés :")  # Affiche un aperçu des résultats
+    print("\nAperçu des stops détectés :")  # Affiche un aperçu des résultats
     print(stop_points[['start_time', 'end_time', 'duration_s', 'lat', 'lon']].head())
 
     return stop_points[['start_time', 'end_time', 'duration_s', 'lat', 'lon']]  # Retourne le DataFrame avec les colonnes utiles

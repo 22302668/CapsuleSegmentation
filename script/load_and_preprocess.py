@@ -3,8 +3,9 @@ import numpy as np
 from geopy.distance import geodesic
 import os
 from sqlalchemy import text
+import geopandas as gpd
 
-def load_data_and_prepare(engine=None):
+def load_data_and_prepare(engine):
     """
     Charge les données GPS depuis PostgreSQL, calcule la distance, vitesse, vitesse lissée, etc.
     """
@@ -16,18 +17,18 @@ def load_data_and_prepare(engine=None):
     # df = gpd.read_file(data_path, layer='trajectories')  #lecture du fichier GeoPackage avec GeoPandas, couche 'trajectories'
     # print("Colonnes disponibles :", df.columns)
 
-    path = r"C:\Users\22302668\Desktop\CapsuleV2\participant-data-semain43\GPS\Participant9999965-gps.csv"
-    df = pd.read_csv(path)
-    df.columns = df.columns.str.strip().str.replace('"', '')  # ← nettoie les noms de colonnes
-    # with engine.connect() as conn:
-    #     df = pd.read_sql_query(text("SELECT * FROM clean_gps WHERE participant_virtual_id = '9999965'"), con=conn)
+    # path = r"C:\Users\22302668\Desktop\CapsuleV2\participant-data-semain43\GPS\Participant9999965-gps.csv"
+    # df = pd.read_csv(path)
+    # df.columns = df.columns.str.strip().str.replace('"', '')  # ← nettoie les noms de colonnes
+    with engine.connect() as conn:
+        df = pd.read_sql_query(text("SELECT * FROM clean_gps WHERE participant_virtual_id = '9999965'"), con=conn)
 
     # Preprocessing
-    #df['timestamp'] = pd.to_datetime(df['time'], utc=True).dt.tz_convert('Europe/Paris')
-    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
+    df['timestamp'] = pd.to_datetime(df['time'], utc=True).dt.tz_convert('Europe/Paris')
+    # df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
 
-    #df = df.drop(columns=['time'])
-    df = df.sort_values(by='timestamp').reset_index(drop=True)
+    df = df.drop(columns=['time'])
+    # df = df.sort_values(by='timestamp').reset_index(drop=True)
 
     df['time_diff_s'] = df['timestamp'].diff().dt.total_seconds()
 
