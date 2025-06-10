@@ -1,7 +1,7 @@
 import pandas as pd
 
 
-def merge_stops(stops_df, epsilon_lat=0.00035, epsilon_lon=0.00045):
+def merge_stops(stops_df, epsilon_lat=0.00035, epsilon_lon=0.00045, max_time_gap_s=300):
     """
     Regroupe les arrêts spatialement proches en une bounding box.
     Si tous les points sont proches entre eux, on les fusionne
@@ -22,6 +22,23 @@ def merge_stops(stops_df, epsilon_lat=0.00035, epsilon_lon=0.00045):
 
     group = []
     for _, row in stops_df.iterrows():
+        # Vérification du time gap si groupe existant
+        if group:
+            last_end = group[-1]['end_time']
+            time_gap = (row['start_time'] - last_end).total_seconds()
+            if time_gap > max_time_gap_s:
+                # Finaliser le groupe actuel et recommencer
+                temp_df = pd.DataFrame(group)
+                grouped_stops.append({
+                    "start_time": temp_df['start_time'].min(),
+                    "end_time": temp_df['end_time'].max(),
+                    "duration_s": temp_df['duration_s'].sum(),
+                    "lat": (temp_df['lat'].max() + temp_df['lat'].min()) / 2,
+                    "lon": (temp_df['lon'].max() + temp_df['lon'].min()) / 2,
+                    "group_size": len(temp_df)
+                })
+                group = []
+
         group.append(row)
         group_df = pd.DataFrame(group)
 
@@ -32,7 +49,7 @@ def merge_stops(stops_df, epsilon_lat=0.00035, epsilon_lon=0.00045):
         if lat_span <= epsilon_lat and lon_span <= epsilon_lon:
             continue  # On continue à ajouter des points dans le groupe
         else:
-            # On finalise le groupe précédent (sans le point en trop)
+            # On finalise le groupe précédent 
             last_valid_group = group[:-1]
             if last_valid_group:
                 temp_df = pd.DataFrame(last_valid_group)

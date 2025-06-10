@@ -1,10 +1,10 @@
-# Version nettoyée et optimisée du script de génération de rapport GPS avec MovingPandas
-
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 import base64
 from io import BytesIO
+import numpy as np
+from matplotlib.patches import Patch
 
 def fig_to_base64(fig):
     buf = BytesIO()
@@ -22,99 +22,176 @@ def enrich_time_columns(df):
     df['is_weekend'] = df['dayofweek'] >= 5
     return df
 
-def assign_movement_type(row, speed_thresholds=(1, 5), stop_min_duration=60):
-    speed = row['speed_kmh']
-    duration = row['time_diff_s']
-    if pd.isna(speed) or pd.isna(duration):
-        return 'unknown'
-    if speed < speed_thresholds[0] and duration >= stop_min_duration:
-        return 'stop'
-    elif speed < speed_thresholds[1]:
-        return 'slow_walk'
-    elif speed < 15:
-        return 'fast_walk'
-    elif speed <= 150:
-        return 'transport'
-    else:
-        return 'unknown'
-
-def plot_daily_hourly_stop_patterns(stops_summary):
-    stops_summary = stops_summary[stops_summary['start_time'].notna()].copy()
-    enrich_time_columns(stops_summary)
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-
-    for date, group in stops_summary[~stops_summary['is_weekend']].groupby('date'):
-        hourly = group.groupby('hour')['duration_s'].sum() / 60
-        if hourly.sum() > 10:
-            ax1.plot(hourly.index, hourly.clip(upper=1000), label=str(date))
-    ax1.set_title("Semaine")
-    ax1.set_ylabel("Durée des stops (min)")
-    ax1.legend()
-
-    for date, group in stops_summary[stops_summary['is_weekend']].groupby('date'):
-        hourly = group.groupby('hour')['duration_s'].sum() / 60
-        if hourly.sum() > 10:
-            ax2.plot(hourly.index, hourly.clip(upper=1000), label=str(date))
-    ax2.set_title("Weekend")
-    ax2.set_ylabel("Durée des stops (min)")
-    ax2.set_xlabel("Heure")
-    ax2.legend()
-
-    fig.tight_layout()
-    return fig_to_base64(fig)
-
-def plot_daily_hourly_point_patterns(df):
+def plot_daily_hourly_speed_patterns(df):
     df = df[df['timestamp'].notna()].copy()
     df['hour'] = df['timestamp'].dt.hour
     df['date'] = df['timestamp'].dt.date
     df['dayofweek'] = df['timestamp'].dt.dayofweek
     df['is_weekend'] = df['dayofweek'] >= 5
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
 
     # Partie semaine
     for date, group in df[~df['is_weekend']].groupby('date'):
-        hourly = group.groupby('hour').size()
-        if hourly.sum() > 10:
+        hourly = group.groupby('hour')['speed_kmh'].mean()
+        if not hourly.empty:
             ax1.plot(hourly.index, hourly, label=str(date))
-    ax1.set_title("Semaine")
-    ax1.set_ylabel("Nombre de points")
-    ax1.legend(loc='upper right', fontsize='small')
+    ax1.set_title("Vitesse moyenne par heure – Semaine")
+    ax1.set_ylabel("Vitesse (km/h)")
+    ax1.legend(loc='upper right', fontsize='x-small')
 
     # Partie weekend
     for date, group in df[df['is_weekend']].groupby('date'):
-        hourly = group.groupby('hour').size()
-        if hourly.sum() > 10:
+        hourly = group.groupby('hour')['speed_kmh'].mean()
+        if not hourly.empty:
             ax2.plot(hourly.index, hourly, label=str(date))
-    ax2.set_title("Weekend")
-    ax2.set_ylabel("Nombre de points")
+    ax2.set_title("Vitesse moyenne par heure – Weekend")
     ax2.set_xlabel("Heure")
-    ax2.legend(loc='upper right', fontsize='small')
+    ax2.set_ylabel("Vitesse (km/h)")
+    ax2.legend(loc='upper right', fontsize='x-small')
 
     fig.tight_layout()
     return fig_to_base64(fig)
 
+def plot_heatmap_date_hour(df):
+    # Préparation
+    df = df[df['timestamp'].notna()].copy()
+    df['hour'] = df['timestamp'].dt.hour
+    df['date'] = df['timestamp'].dt.date
 
-def generate_figures(df, stops_summary=None):
+    # Grouper : nombre de points par date et heure
+    grouped = df.groupby(['date', 'hour']).size().unstack(fill_value=0)
+
+    # Trier les dates (si pas déjà)
+    grouped = grouped.sort_index()
+
+    # Création de la heatmap
+    fig, ax = plt.subplots(figsize=(14, max(6, len(grouped) * 0.35)))  # hauteur dynamique selon nbre de jours
+    sns.heatmap(grouped, cmap="Blues", annot=True, fmt='d', linewidths=.5, ax=ax)
+
+    ax.set_title("Heatmap des fréquences GPS – Date x Heure")
+    ax.set_xlabel("Heure")
+    ax.set_ylabel("Date")
+    plt.tight_layout()
+
+    return fig_to_base64(fig)
+
+def plot_heatmap_vitesse_date_hour(df):
+    df = df[df['timestamp'].notna() & df['speed_kmh'].notna()].copy()
+    df['hour'] = df['timestamp'].dt.hour
+    df['date'] = df['timestamp'].dt.date
+
+    # Grouper par date et heure → moyenne des vitesses
+    grouped = df.groupby(['date', 'hour'])['speed_kmh'].mean().unstack(fill_value=0)
+
+    # Trier les dates
+    grouped = grouped.sort_index()
+
+    # Créer la heatmap
+    fig, ax = plt.subplots(figsize=(14, max(6, len(grouped) * 0.35)))
+    sns.heatmap(grouped, cmap="YlOrRd", annot=True, fmt='.1f', linewidths=.5, ax=ax)
+
+    ax.set_title("Heatmap des vitesses moyennes – Date x Heure")
+    ax.set_xlabel("Heure")
+    ax.set_ylabel("Date")
+    plt.tight_layout()
+
+    return fig_to_base64(fig)
+
+def plot_combined_confidence_score(classified_stops: pd.DataFrame) -> str:
+    """
+    Génère un graphique du score de confiance combiné (durée + fréquence) pour les lieux Home / Work.
+    """
+    df = classified_stops[classified_stops['place_type'].isin(['Home', 'Work'])].copy()
+    if df.empty:
+        return ""
+
+    # Calcul du score temps
+    max_duration = df['duration_s'].max()
+    df['score_duree'] = df['duration_s'] / max_duration
+
+    # Calcul du score de fréquence (nb de jours distincts)
+    df['merged_days'] = df['merged_starts'].apply(lambda lst: set(pd.to_datetime(lst).date) if isinstance(lst, list) else set())
+    df['nb_days'] = df['merged_days'].apply(len)
+    max_days = df['nb_days'].max()
+    df['score_frequence'] = df['nb_days'] / max_days
+
+    # Score combiné pondéré (50% durée, 50% fréquence)
+    df['score_combine'] = ((df['score_duree'] + df['score_frequence']) / 2 * 100).round(1)
+
+    df['label'] = df.apply(lambda row: f"{row['place_type']} ({round(row['lat'], 3)}, {round(row['lon'], 3)})", axis=1)
+
+    # Plot
+    plt.figure(figsize=(10, max(4, 0.5 * len(df))))
+    palette = {'Home': '#3498db', 'Work': '#9b59b6'}
+
+    ax = sns.barplot(
+        data=df,
+        x="score_combine",
+        y="label",
+        hue="place_type",
+        dodge=False,
+        palette=palette
+    )
+
+    for p in ax.patches:
+        width = p.get_width()
+        ax.annotate(f"{width:.0f}%",
+                    (width + 1, p.get_y() + p.get_height() / 2),
+                    ha='left', va='center', fontsize=9, color='black')
+
+    plt.title("Score combiné Home / Work (durée + fréquence)", fontsize=14)
+    plt.xlabel("Score combiné (%)")
+    plt.ylabel("Lieu (type + coordonnées)")
+    plt.xlim(0, 110)
+    plt.legend(title="Type de lieu", loc="lower right")
+    sns.despine(left=True, bottom=True)
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    base64_img = base64.b64encode(buf.read()).decode('utf-8')
+    plt.close()
+
+    return base64_img
+
+def generate_figures(df, classified_stops, stops_summary=None):
     figures_base64 = {}
 
     df = enrich_time_columns(df)
-    df['movement_type'] = df.apply(assign_movement_type, axis=1)
 
     fig1, ax1 = plt.subplots(figsize=(8, 4))
     df['speed_kmh'].clip(upper=80).hist(bins=60, ax=ax1)
     ax1.set_title("Distribution des vitesses (km/h)")
     figures_base64['distribution_vitesse'] = fig_to_base64(fig1)
 
+    # Histogramme fusionné (0 < v ≤ 10), 2 couleurs
     fig2, ax2 = plt.subplots(figsize=(8, 4))
-    df[df['speed_kmh'] <= 10]['speed_kmh'].hist(bins=30, ax=ax2)
-    ax2.set_title("Vitesses ≤ 10 km/h")
-    figures_base64['distribution_vitesse_basse'] = fig_to_base64(fig2)
+    speed_data = df[(df['speed_kmh'] > 0) & (df['speed_kmh'] <= 10)]['speed_kmh']
+    bins = np.linspace(0, 10, 31)
+    colors = ['red' if b <= 3 else 'orange' for b in bins[:-1]]
+    counts, edges = np.histogram(speed_data, bins=bins)
+    for left, right, count, color in zip(edges[:-1], edges[1:], counts, colors):
+        ax2.bar(left, count, width=right-left, align='edge', color=color, edgecolor='black')
+    legend_elements = [
+        Patch(facecolor='red', edgecolor='black', label='0–3 km/h (stops / lent)'),
+        Patch(facecolor='orange', edgecolor='black', label='3–10 km/h (marche)'),
+    ]
+    ax2.legend(handles=legend_elements, loc='upper right')
+    ax2.set_title("Distribution des vitesses (0 < v ≤ 10 km/h)")
+    ax2.set_xlabel("Vitesse (km/h)")
+    ax2.set_ylabel("Nombre de points")
+    figures_base64['distribution_vitesse_0_10_split'] = fig_to_base64(fig2)
+
+
+    ax2.set_title("Distribution des vitesses (0 < v ≤ 10 km/h)")
+    ax2.set_xlabel("Vitesse (km/h)")
+    ax2.set_ylabel("Nombre de points")
+    figures_base64['distribution_vitesse_0_10_split'] = fig_to_base64(fig2)
 
     fig3, ax3 = plt.subplots(figsize=(8, 4))
     df[df['speed_kmh'] > 10]['speed_kmh'].hist(bins=30, ax=ax3)
-    ax3.set_title("Vitesses > 10 km/h")
     figures_base64['distribution_vitesse_haute'] = fig_to_base64(fig3)
 
     fig4, ax4 = plt.subplots(figsize=(8, 4))
@@ -128,65 +205,14 @@ def generate_figures(df, stops_summary=None):
     ax5.set_title("Vitesse moyenne par jour")
     figures_base64['vitesse_par_jour'] = fig_to_base64(fig5)
 
-    fig6, ax6 = plt.subplots(figsize=(6, 4))
-    df['movement_type'].value_counts().plot(kind='bar', ax=ax6, color=['red', 'orange', 'blue', 'green', 'gray'])
-    ax6.set_title("Répartition des types de mouvement")
-    figures_base64['types_de_mouvement'] = fig_to_base64(fig6)
+    figures_base64['vitesse_hebdo_horaire'] = plot_daily_hourly_speed_patterns(df)
 
-    if stops_summary is not None and not stops_summary.empty:
-        stops_summary = enrich_time_columns(stops_summary)
+    figures_base64['heatmap_date_hour'] = plot_heatmap_date_hour(df)
+    figures_base64['heatmap_vitesse_date_hour'] = plot_heatmap_vitesse_date_hour(df)
 
-        fig7, ax7 = plt.subplots(figsize=(6, 5))
-        sc = ax7.scatter(stops_summary['lon'], stops_summary['lat'], c=stops_summary['duration_s'], cmap='Reds', s=50, alpha=0.7)
-        plt.colorbar(sc, ax=ax7, label='Durée (s)')
-        ax7.set_title("Positions des stops (durée en couleur)")
-        figures_base64['stops_dispersion'] = fig_to_base64(fig7)
+    if classified_stops is not None:
+        figures_base64['confidence_score_home_work'] = plot_combined_confidence_score(classified_stops)
 
-        fig8, ax8 = plt.subplots(figsize=(6, 4))
-        stops_summary['duration_s'].hist(bins=20, ax=ax8)
-        ax8.set_title("Durée des stops (en secondes)")
-        figures_base64['stops_duree'] = fig_to_base64(fig8)
-
-        fig9, ax9 = plt.subplots(figsize=(6, 4))
-        stops_summary['hour'].value_counts().sort_index().plot(kind='bar', ax=ax9)
-        ax9.set_title("Nombre de stops par heure")
-        figures_base64['stops_par_heure'] = fig_to_base64(fig9)
-
-        figures_base64['stop_weekday_vs_weekend'] = plot_daily_hourly_stop_patterns(stops_summary)
-        figures_base64['points_weekdays_vs_weekends'] = plot_daily_hourly_point_patterns(df)
-
-    figures_base64.update(generate_frequency_analysis(df))
     plt.close('all')
     return figures_base64
 
-def generate_frequency_analysis(df):
-    figures = {}
-
-    df = enrich_time_columns(df)
-
-    fig1, ax1 = plt.subplots(figsize=(8, 4))
-    df.groupby('date').size().plot(kind='bar', ax=ax1)
-    ax1.set_title("Nombre de points GPS par jour")
-    ax1.set_xlabel("Date")
-    ax1.set_ylabel("Nombre de points")
-    figures['points_par_jour'] = fig_to_base64(fig1)
-
-    fig2, ax2 = plt.subplots(figsize=(8, 4))
-    df.groupby('hour').size().plot(kind='bar', ax=ax2)
-    ax2.set_title("Nombre de points GPS par heure")
-    ax2.set_xlabel("Heure")
-    ax2.set_ylabel("Nombre de points")
-    figures['points_par_heure'] = fig_to_base64(fig2)
-
-    pivot = df.pivot_table(index='weekday_num', columns='hour', values='timestamp', aggfunc='count', fill_value=0)
-    weekday_map = {0: 'Lundi', 1: 'Mardi', 2: 'Mercredi', 3: 'Jeudi', 4: 'Vendredi', 5: 'Samedi', 6: 'Dimanche'}
-    pivot.index = pivot.index.map(weekday_map)
-    fig3, ax3 = plt.subplots(figsize=(12, 5))
-    sns.heatmap(pivot, cmap="Blues", linewidths=0.5, annot=True, fmt="d", ax=ax3)
-    ax3.set_title("Heatmap fréquence GPS (jour x heure)")
-    ax3.set_xlabel("Heure")
-    ax3.set_ylabel("Jour de la semaine")
-    figures['heatmap_frequence'] = fig_to_base64(fig3)
-
-    plt.close('all')
-    return figures

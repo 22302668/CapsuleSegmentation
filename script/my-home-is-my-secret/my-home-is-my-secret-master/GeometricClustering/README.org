@@ -1,0 +1,19 @@
+* Short tutorial:
+** Get the program running:
+- create new eclipse project
+- unzip src.zip and copy files into project folder
+- add jar files to build path
+- unzip input.zip into project folder
+- run program (without setting program arguments: will apply clustering with k=4 on "input/centroids-utm.shp")
+** After program completion:
+- add generated shp files to qgis
+- use column "myid" to display different clusters with different colors
+
+* References
+The following method is used to obtain clusters of size at least k:
+
+Imielińska, C., Kalantari, B., & Khachiyan, L. 1993. A greedy heuristic for a
+minimum-weight forest problem. Operations Research Letters, 14(2), 65–71.
+
+[[./doc/screenshot.png]]
+*Example output for clustering with k=4*

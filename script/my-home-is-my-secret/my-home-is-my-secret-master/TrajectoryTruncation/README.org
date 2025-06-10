@@ -1,0 +1,12 @@
+* Short tutorial:
+** Get the program running:
+- create new eclipse project
+- unzip src.zip and copy files into project folder
+- add jar files to build path
+- unzip input.zip into project folder
+- run program (without setting program arguments: will create triangles with alpha = 60°)
+** After program completion:
+- add generated shp files to qgis
+
+[[./doc/fig.pdf]]
+*Visualization of the truncation algorithm*

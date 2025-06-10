@@ -5,30 +5,21 @@ import os
 from sqlalchemy import text
 import geopandas as gpd
 
-def load_data_and_prepare(engine):
+def load_data_and_prepare(engine, participant_id):
     """
     Charge les données GPS depuis PostgreSQL, calcule la distance, vitesse, vitesse lissée, etc.
     """
-    # current_dir = os.getcwd()  #chemin vers le répertoire contenant le script
-    # data_folder = os.path.abspath(os.path.join(current_dir, "..", "participant-data-semain43"))  #chemin vers le repertoire contenant le script
-    # data_path = os.path.join(data_folder, "Cleaned_Trajectories.gpkg")  #eonstruction du chemin absolu vers le dossier contenant les données
 
-    # print("Chargement des trajectoires...")
-    # df = gpd.read_file(data_path, layer='trajectories')  #lecture du fichier GeoPackage avec GeoPandas, couche 'trajectories'
-    # print("Colonnes disponibles :", df.columns)
-
-    # path = r"C:\Users\22302668\Desktop\CapsuleV2\participant-data-semain43\GPS\Participant9999965-gps.csv"
-    # df = pd.read_csv(path)
-    # df.columns = df.columns.str.strip().str.replace('"', '')  # ← nettoie les noms de colonnes
     with engine.connect() as conn:
-        df = pd.read_sql_query(text("SELECT * FROM clean_gps WHERE participant_virtual_id = '9999965'"), con=conn)
+        df = pd.read_sql_query(
+            text(f"SELECT * FROM gps_mesures WHERE participant_virtual_id = '{participant_id}'"),
+            con=conn
+        )
 
     # Preprocessing
-    df['timestamp'] = pd.to_datetime(df['time'], utc=True).dt.tz_convert('Europe/Paris')
-    # df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
 
-    df = df.drop(columns=['time'])
-    # df = df.sort_values(by='timestamp').reset_index(drop=True)
+    df = df.sort_values(by='timestamp').reset_index(drop=True)
 
     df['time_diff_s'] = df['timestamp'].diff().dt.total_seconds()
 
@@ -45,3 +36,24 @@ def load_data_and_prepare(engine):
     df['speed_kmh_smooth'] = df['speed_kmh'].rolling(window=5, min_periods=1, center=True).mean()
 
     return df
+
+def segment_by_data_weeks(df):
+    """
+    À partir d'un DataFrame contenant au moins la colonne 'timestamp' (datetime),
+    détecte automatiquement les plages de dates consécutives où il y a au moins
+    un point GPS. Renvoie une liste de tuples (date_debut, date_fin).
+    """
+    unique_dates = sorted(df['timestamp'].dt.date.unique())
+    if not unique_dates:
+        return []
+
+    segments = []
+    start = unique_dates[0]
+    prev = unique_dates[0]
+    for current in unique_dates[1:]:
+        if (current - prev).days > 1:
+            segments.append((start, prev))
+            start = current
+        prev = current
+    segments.append((start, prev))
+    return segments
