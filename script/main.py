@@ -1,108 +1,154 @@
-from load_and_preprocess            import load_data_and_prepare, segment_by_data_weeks
-from generate_report                import render_segment_report, generate_full_report
-from movingpandas_stop_detection    import detect_stops_with_movingpandas
-from detect_stops_and_analyze       import generate_figures
-from verify_stop_activities         import verify_stop_activities
-from group_stops                    import merge_stops
-from classify_home_work             import classify_home_work
-from evaluate_home_work import evaluate_home_work_classification
-from merge_close_stops              import merge_close_stops
-
+#!/usr/bin/env python3
 import os
 import pandas as pd
-from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 
+from load_and_preprocess         import load_data_and_prepare, segment_by_data_weeks
+from movingpandas_stop_detection import detect_stops_with_movingpandas
+from classify_home_work          import classify_home_work
+from evaluate_home_work          import evaluate_home_work_classification
+from detect_stops_and_analyze    import generate_figures
+from verify_stop_activities      import verify_stop_activities
+from generate_report             import render_segment_report, generate_full_report
+from dbscan_clustering           import cluster_stops_dbscan
+from split_moves_stops           import split_stops_moves
 
 def generate_report_for_participant(df, participant_id, engine):
+    # 1) découpage en plages de jours consécutifs
     segments = segment_by_data_weeks(df)
-    is_single_segment = len(segments) <= 1
-
-    if is_single_segment:
-        print("Un seul segment détecté : traitement global sans découpage.")
+    if len(segments) <= 1:
         segments = [(df['timestamp'].dt.date.min(), df['timestamp'].dt.date.max())]
 
     os.makedirs("data", exist_ok=True)
-    rapport_filename = f"{participant_id}_rapport.html"
-    rapport_path     = os.path.join("data", rapport_filename)
+    rapport_path = os.path.join("data", f"{participant_id}_rapport.html")
 
-    all_grouped_stops = []
-    segment_htmls     = []
+    all_stops     = []
+    segment_htmls = []
 
-    if not is_single_segment:
-        print("Segments de collecte détectés :")
-        for i, (d_start, d_end) in enumerate(segments, start=1):
-            print(f"  Segment {i} : {d_start} → {d_end}")
+    for idx, (d_start, d_end) in enumerate(segments, start=1):
+        # 2) extraire le segment
+        df_seg = df[
+            (df['timestamp'].dt.date >= d_start) &
+            (df['timestamp'].dt.date <= d_end)
+        ].reset_index(drop=True)
 
-        for idx, (d_start, d_end) in enumerate(segments, start=1):
-            print(f"\n--- Traitement du segment {idx} : {d_start} → {d_end} ---")
-            mask   = (df['timestamp'].dt.date >= d_start) & (df['timestamp'].dt.date <= d_end)
-            df_seg = df.loc[mask].reset_index(drop=True)
-            print(f"Points GPS dans ce segment : {len(df_seg)}")
-
-            print("Détection des stops avec MovingPandas…")
-            stops_summary = detect_stops_with_movingpandas(df_seg, min_duration_minutes=6, max_diameter_meters=30)
-            grouped_stops = merge_stops(stops_summary)
-
-            if not grouped_stops.empty and 'start_time' in grouped_stops.columns:
-                all_grouped_stops.append(grouped_stops)
-            else:
-                html_note = f"""
-                <hr style="margin:40px 0;">
-                <h2 id="segment_{d_start}_{d_end}">Segment {idx} : {d_start} → {d_end}</h2>
-                <p><em>Aucun stop détecté sur ce segment.</em></p>
-                """
-                segment_htmls.append(html_note)
-                continue
-
-            classified_stops = classify_home_work(grouped_stops)
-            final_stops = merge_close_stops(classified_stops, max_distance_m=150)
-            evaluation = evaluate_home_work_classification(final_stops)
-            figures_base64 = generate_figures(df_seg, classified_stops, stops_summary)
-
-            segment_html = render_segment_report(
-                df_seg, stops_summary, grouped_stops, final_stops, evaluation,
-                pd.DataFrame(), figures_base64, d_start, d_end
+        # 3) détection brute de stops
+        stops_summary = detect_stops_with_movingpandas(
+            df_seg,
+            min_duration_minutes=15,
+            max_diameter_meters=75
+        )
+        if stops_summary.empty:
+            segment_htmls.append(
+                f"<hr><h2>Segment {idx} : {d_start} → {d_end}</h2>"
+                "<p><em>Aucun stop détecté.</em></p>"
             )
-            segment_htmls.append(segment_html)
+            continue
 
-    # 🔁 Partie fusion finale (toujours faite, même si 1 seul segment)
-    print("\nFusion finale et génération de la section « Résultat final »…")
-    if is_single_segment:
-        d_start, d_end = segments[0]
-        df_seg = df.copy()
-        stops_summary = detect_stops_with_movingpandas(df_seg, min_duration_minutes=6, max_diameter_meters=30)
-        grouped_stops = merge_stops(stops_summary)
-        all_grouped_stops.append(grouped_stops)
+        # 4) clustering spatial DBSCAN
+        raw_stops = stops_summary[['start_time','end_time','lat','lon','duration_s']].copy()
+        # Note : signature cluster_stops_dbscan(gps_df, stops_df, eps_m, min_samples)
+        gps_in_stops, grouped_stops = cluster_stops_dbscan(
+            df_seg,
+            raw_stops,
+            eps_m=150,
+            min_samples=1
+        )
+        if grouped_stops.empty:
+            segment_htmls.append(
+                f"<hr><h2>Segment {idx} : {d_start} → {d_end}</h2>"
+                "<p><em>Aucun stop après DBSCAN.</em></p>"
+            )
+            continue
 
-    merged_grouped_stops   = pd.concat(all_grouped_stops, ignore_index=True)
-    final_classified_stops = classify_home_work(merged_grouped_stops)
-    final_merged_stops     = merge_close_stops(final_classified_stops, max_distance_m=150)
-    final_evaluation_merged = evaluate_home_work_classification(final_merged_stops)
+        all_stops.append(grouped_stops)
 
-    stops_with_activities, _ = verify_stop_activities(final_classified_stops, engine, participant_id)
-    matched_unknowns_df      = stops_with_activities[stops_with_activities['place_type'] == 'autre'].copy()
+        # 5) classification Home/Work + statistiques + figures
+        classified = classify_home_work(grouped_stops)
+        evaluation = evaluate_home_work_classification(classified)
+        figures    = generate_figures(df_seg, classified, stops_summary)
 
-    final_html_section = generate_full_report(
-        df, merged_grouped_stops, final_merged_stops, final_evaluation_merged, matched_unknowns_df
+        # 6) rendu HTML de ce segment
+        seg_html = render_segment_report(
+            df_seg,
+            stops_summary,
+            grouped_stops,
+            classified,
+            evaluation,
+            pd.DataFrame(),  # matched_unknowns_df vide ici
+            figures,
+            d_start,
+            d_end
+        )
+        segment_htmls.append(seg_html)
+
+    # — fusion finale de tous les stops détectés —
+    merged = pd.concat(all_stops, ignore_index=True) if all_stops else pd.DataFrame()
+    if not merged.empty:
+        # re-classification après fusion
+        final_classified = classify_home_work(merged)
+        final_evaluation = evaluate_home_work_classification(final_classified)
+
+        # retirer tz pour verify_stop_activities
+        final_classified['start_time'] = final_classified['start_time'].dt.tz_localize(None)
+        final_classified['end_time']   = final_classified['end_time'].dt.tz_localize(None)
+
+        matched, _       = verify_stop_activities(
+            final_classified, engine, participant_id
+        )
+        matched_unknowns = (
+            matched[matched['place_type']=='autre'].copy()
+            if not matched.empty else pd.DataFrame()
+        )
+    else:
+        final_classified = merged
+        final_evaluation = {}
+        matched_unknowns = pd.DataFrame()
+
+    # 7) génération de la section « Résultat final »
+    stops_summary_all = detect_stops_with_movingpandas(
+        df, 
+        min_duration_minutes=15, 
+        max_diameter_meters=75
+    )
+    full_section = generate_full_report(
+        df,
+        stops_summary_all,       # ← passe les stops bruts MovingPandas
+        merged,
+        final_classified,
+        final_classified,
+        final_evaluation,
+        matched_unknowns         # ← passe la table de 'autre' jointe aux activités
     )
 
+    # dans main ou generate_report_for_participant global
+    ds1_all, ds2_all = split_stops_moves(df, stops_summary_all)
+    ds1_all.to_csv(f"data/{participant_id}_all_stops.csv", index=False)
+    ds2_all.to_csv(f"data/{participant_id}_all_moves.csv", index=False)
+
+
+    # 8) écriture du rapport complet
     with open(rapport_path, "w", encoding="utf-8") as f:
-        f.write("""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Rapport GPS – MovingPandas</title>
-<style>body { font-family: Arial, sans-serif; margin: 20px; } h1, h2, h3, h4 { color: #2c3e50; } .table-container { overflow-x: auto; } hr { margin: 40px 0; }</style>
-</head><body>
-""")
-        f.write(f"<h1>Rapport GPS – Participant {participant_id}</h1>\n")
-        f.write(f"<p><em>Date de génération : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</em></p>\n")
-        f.write(final_html_section)
+        f.write(
+            "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+            "<title>Rapport GPS</title>"
+            "<style>"
+            "body{font-family:Arial; margin:20px;}"
+            "h1,h2,h3{color:#2c3e50;}"
+            ".table-container{overflow-x:auto;}"
+            "hr{margin:40px 0;}"
+            "</style></head><body>"
+        )
+        f.write(f"<h1>Rapport GPS – Participant {participant_id}</h1>")
+        f.write(f"<p><em>Date : {pd.Timestamp.now():%Y-%m-%d %H:%M:%S}</em></p>")
+        f.write(full_section)
+        for html in segment_htmls:
+            f.write(html)
+        f.write("</body></html>")
 
-    with open(rapport_path, "a", encoding="utf-8") as f:
-        for html_seg in segment_htmls:
-            f.write(html_seg)
-        f.write("\n</body>\n</html>")
+    print(f"Rapport généré → {rapport_path}")
 
-    print(f"\nRapport généré pour le participant : {rapport_path}")
 
 def main():
     load_dotenv()
@@ -114,21 +160,18 @@ def main():
     engine = create_engine(url)
 
     with engine.connect() as conn:
-        participants = pd.read_sql_query(text("""
-            SELECT DISTINCT participant_virtual_id
-            FROM gps_mesures
-        """), conn)['participant_virtual_id'].tolist()
+        participants = pd.read_sql_query(
+            text("SELECT DISTINCT participant_virtual_id FROM gps_mesures"),
+            conn
+        )['participant_virtual_id'].tolist()
 
-    for participant_id in participants:
-        print(f"\n=== Traitement du participant : {participant_id} ===")
-        try:
-            df = load_data_and_prepare(engine, participant_id)
-            if df.empty:
-                print("→ Données GPS absentes pour ce participant.")
-                continue
-            generate_report_for_participant(df, participant_id, engine)
-        except Exception as e:
-            print(f"❌ Erreur pour le participant {participant_id} : {e}")
+    for pid in participants:
+        print(f"\n=== Participant {pid} ===")
+        df = load_data_and_prepare(engine, pid)
+        if df.empty:
+            print("Aucun point GPS.")
+            continue
+        generate_report_for_participant(df, pid, engine)
 
 
 if __name__ == "__main__":

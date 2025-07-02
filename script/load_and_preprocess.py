@@ -32,14 +32,14 @@ def load_data_and_prepare(engine, participant_id):
 
     df['speed_kmh'] = df['dist_m'] / df['time_diff_s'] * 3.6
     df['speed_kmh'] = df['speed_kmh'].replace([np.inf, -np.inf], np.nan)
-    df = df[df['speed_kmh'] <= 150]
+    #df = df[df['speed_kmh'] <= 150]
     df['speed_kmh_smooth'] = df['speed_kmh'].rolling(window=5, min_periods=1, center=True).mean()
 
     return df
 
 def segment_by_data_weeks(df):
     """
-    À partir d'un DataFrame contenant au moins la colonne 'timestamp' (datetime),
+    A partir d'un DataFrame contenant au moins la colonne 'timestamp' (datetime),
     détecte automatiquement les plages de dates consécutives où il y a au moins
     un point GPS. Renvoie une liste de tuples (date_debut, date_fin).
     """

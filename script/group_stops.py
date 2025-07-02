@@ -1,93 +1,65 @@
 import pandas as pd
 
-
 def merge_stops(stops_df, epsilon_lat=0.00035, epsilon_lon=0.00045, max_time_gap_s=300):
     """
-    Regroupe les arrêts spatialement proches en une bounding box.
-    Si tous les points sont proches entre eux, on les fusionne
-    en un seul stop centré. Sinon, chaque point reste un stop indépendant.
+    Regroupe les arrêts spatialement proches en une bounding box,
+    sans jamais fusionner d’arrêts de dates différentes.
 
     Args:
         stops_df (pd.DataFrame): colonnes requises ['lat', 'lon', 'start_time', 'end_time', 'duration_s']
         epsilon_lon (float): tolérance spatiale longitudinale
         epsilon_lat (float): tolérance spatiale latitudinale
+        max_time_gap_s (int): écart temporel maximal (en s) pour rester dans le même groupe
 
     Returns:
         pd.DataFrame: stops fusionnés ou non, avec une colonne 'group_size'
     """
     grouped_stops = []
-
-    # On trie les données
+    # Tri chronologique
     stops_df = stops_df.sort_values("start_time").reset_index(drop=True)
-
     group = []
+
+    def flush_group(g):
+        """Ajoute le groupe g à grouped_stops puis vide g."""
+        if not g:
+            return
+        dfg = pd.DataFrame(g)
+        grouped_stops.append({
+            "start_time": dfg['start_time'].min(),
+            "end_time":   dfg['end_time'].max(),
+            "duration_s": dfg['duration_s'].sum(),
+            "lat":        (dfg['lat'].max()  + dfg['lat'].min())  / 2,
+            "lon":        (dfg['lon'].max()  + dfg['lon'].min())  / 2,
+            "group_size": len(dfg)
+        })
+        g.clear()
+
     for _, row in stops_df.iterrows():
-        # Vérification du time gap si groupe existant
+        # 1) Si le groupe courant porte sur un autre jour -> on l'expédie
+        if group and row['start_time'].date() != group[0]['start_time'].date():
+            flush_group(group)
+
+        # 2) Si écart temporel > max_time_gap_s -> on expédie aussi
         if group:
             last_end = group[-1]['end_time']
-            time_gap = (row['start_time'] - last_end).total_seconds()
-            if time_gap > max_time_gap_s:
-                # Finaliser le groupe actuel et recommencer
-                temp_df = pd.DataFrame(group)
-                grouped_stops.append({
-                    "start_time": temp_df['start_time'].min(),
-                    "end_time": temp_df['end_time'].max(),
-                    "duration_s": temp_df['duration_s'].sum(),
-                    "lat": (temp_df['lat'].max() + temp_df['lat'].min()) / 2,
-                    "lon": (temp_df['lon'].max() + temp_df['lon'].min()) / 2,
-                    "group_size": len(temp_df)
-                })
-                group = []
+            if (row['start_time'] - last_end).total_seconds() > max_time_gap_s:
+                flush_group(group)
 
+        # 3) On ajoute toujours le nouveau point, puis on contrôle la bbox
         group.append(row)
-        group_df = pd.DataFrame(group)
+        dfg = pd.DataFrame(group)
+        lat_span = dfg['lat'].max() - dfg['lat'].min()
+        lon_span = dfg['lon'].max() - dfg['lon'].min()
 
-        # Bounding box actuelle
-        lat_span = group_df['lat'].max() - group_df['lat'].min()
-        lon_span = group_df['lon'].max() - group_df['lon'].min()
-
-        if lat_span <= epsilon_lat and lon_span <= epsilon_lon:
-            continue  # On continue à ajouter des points dans le groupe
-        else:
-            # On finalise le groupe précédent 
-            last_valid_group = group[:-1]
-            if last_valid_group:
-                temp_df = pd.DataFrame(last_valid_group)
-                grouped_stops.append({
-                    "start_time": temp_df['start_time'].min(),
-                    "end_time": temp_df['end_time'].max(),
-                    "duration_s": temp_df['duration_s'].sum(),
-                    "lat": (temp_df['lat'].max() + temp_df['lat'].min()) / 2,
-                    "lon": (temp_df['lon'].max() + temp_df['lon'].min()) / 2,
-                    "group_size": len(temp_df)
-                })
-            # Nouveau groupe avec le point en trop
+        # 4) Si on dépasse la tolérance spatiale, on expédie tout sauf ce dernier
+        if lat_span > epsilon_lat or lon_span > epsilon_lon:
+            # on expédie tout sauf row
+            previous = group[:-1]
+            flush_group(previous)
+            # et on repart un nouveau groupe avec row seul
             group = [row]
 
-    # Dernier groupe
-    if group:
-        group_df = pd.DataFrame(group)
-        lat_span = group_df['lat'].max() - group_df['lat'].min()
-        lon_span = group_df['lon'].max() - group_df['lon'].min()
-        if lat_span <= epsilon_lat and lon_span <= epsilon_lon:
-            grouped_stops.append({
-                "start_time": group_df['start_time'].min(),
-                "end_time": group_df['end_time'].max(),
-                "duration_s": group_df['duration_s'].sum(),
-                "lat": (group_df['lat'].max() + group_df['lat'].min()) / 2,
-                "lon": (group_df['lon'].max() + group_df['lon'].min()) / 2,
-                "group_size": len(group_df)
-            })
-        else:
-            # Chaque point séparément
-            for _, r in group_df.iterrows():
-                grouped_stops.append({
-                    "start_time": r['start_time'],
-                    "end_time": r['end_time'],
-                    "duration_s": r['duration_s'],
-                    "lat": r['lat'],
-                    "lon": r['lon'],
-                    "group_size": 1
-                })
+    # À la fin, expédier ce qui reste
+    flush_group(group)
 
     return pd.DataFrame(grouped_stops)

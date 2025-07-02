@@ -4,7 +4,7 @@ from shapely.geometry import Point
 import movingpandas as mpd
 from datetime import timedelta
 
-def detect_stops_with_movingpandas(df, min_duration_minutes=6, max_diameter_meters=30):
+def detect_stops_with_movingpandas(df, min_duration_minutes=15, max_diameter_meters=75):
     """
     Détecte les stops avec MovingPandas à partir d'un DataFrame contenant 'lat', 'lon', 'timestamp'.
     

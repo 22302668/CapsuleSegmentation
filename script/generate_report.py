@@ -2,9 +2,12 @@ from datetime import datetime
 import folium
 from folium.plugins import HeatMap, MiniMap
 import pandas as pd
+import geopandas as gpd
 
-# Cet import vous permet d’appeler generate_figures(...) dans generate_full_report
 from detect_stops_and_analyze import generate_figures
+from movingpandas_stop_detection import detect_stops_with_movingpandas
+from evaluate_home_work import plot_rolling_speed, plot_rolling_speed_with_place
+from dbscan_clustering              import cluster_stops_dbscan
 
 def generate_interactive_map(df, stops_summary, grouped_stops, final_stops):
     """
@@ -152,6 +155,60 @@ def generate_interactive_map(df, stops_summary, grouped_stops, final_stops):
                 popup=popup
             ).add_to(fg_place_type)
         fg_place_type.add_to(m)
+    
+    # 7) Stops classés par catégorie (Home / Work / Autre)
+    if final_stops is not None and 'place_type' in final_stops.columns:
+        for category, color in [('Home','blue'), ('Work','green'), ('autre','gray')]:
+            fg_cat = folium.FeatureGroup(name=f"Stops {category}", show=False)
+            subset = final_stops[final_stops['place_type'] == category]
+            for _, row in subset.iterrows():
+                popup = folium.Popup(
+                    f"<b>Lieu :</b> {row['place_type']}<br>"
+                    f"<b>Début :</b> {row['start_time']}<br>"
+                    f"<b>Fin :</b> {row['end_time']}<br>"
+                    f"<b>Durée :</b> {int(row['duration_s']//60)} min",
+                    max_width=250
+                )
+                folium.CircleMarker(
+                    location=[row['lat'], row['lon']],
+                    radius=6,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.8,
+                    popup=popup
+                ).add_to(fg_cat)
+            fg_cat.add_to(m)
+    # # 7) Stops regroupés 
+    # merged_close = merge_close_stops(final_stops, max_distance_m=150)
+
+    # # créez un nouveau calque
+    # fg_merged = folium.FeatureGroup(
+    #     name=f"Stops fusionnés (close-stops) ({len(merged_close)})",
+    #     show=True
+    # )
+
+    # for _, row in merged_close.iterrows():
+    #     # rayon proportionnel à la taille du groupe
+    #     radius = min(12, max(4, row['group_size'] * 2))
+    #     color  = {'Home':'blue', 'Work':'green', 'autre':'gray'}[row['place_type']]
+    #     popup  = folium.Popup(
+    #         f"<b>Type :</b> {row['place_type']}<br>"
+    #         f"<b>Début :</b> {row['start_time']}<br>"
+    #         f"<b>Fin :</b> {row['end_time']}<br>"
+    #         f"<b>Durée :</b> {row['duration_s']/60:.1f} min<br>"
+    #         f"<b>Points fusionnés :</b> {row['group_size']}",
+    #         max_width=250
+    #     )
+    #     folium.CircleMarker(
+    #         location=(row['lat'], row['lon']),
+    #         radius=radius,
+    #         color=color,
+    #         fill=True, fill_color=color, fill_opacity=0.8,
+    #         popup=popup
+    #     ).add_to(fg_merged)
+
+    # fg_merged.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
@@ -211,14 +268,22 @@ def render_segment_report(
         html += stops_summary.to_html(index=False)
         html += "</div>"
 
-    # Stops regroupés
-    if grouped_stops is not None:
-        html += """
-        <h3>Stops regroupés</h3>
-        <div class="table-container">
-        """
-        html += grouped_stops[['start_time','end_time','duration_s','lat','lon','group_size']].to_html(index=False)
-        html += "</div>"
+    # # Stops regroupés (bounding box)
+    # if grouped_stops is not None and not grouped_stops.empty:
+    #     # 1) Retirer le tz pour éviter le décalage sur to_html()
+    #     df_grp = grouped_stops.copy()
+    #     df_grp['start_time'] = pd.to_datetime(df_grp['start_time']).dt.tz_localize(None)
+    #     df_grp['end_time']   = pd.to_datetime(df_grp['end_time']).dt.tz_localize(None)
+
+    #     # 2) Afficher la table complète
+    #     html += """
+    #     <h3>Stops regroupés</h3>
+    #     <div class="table-container">
+    #     """
+    #     html += df_grp[[
+    #         'start_time','end_time','duration_s','lat','lon','group_size'
+    #     ]].to_html(index=False)
+    #     html += "</div>\n"
 
     # Lieux classifiés Home/Work/Autre
     if final_stops is not None and 'place_type' in final_stops.columns:
@@ -226,7 +291,7 @@ def render_segment_report(
         <h3>Lieux classifiés : Home / Work / Autre</h3>
         <div class="table-container">
         """
-        html += final_stops[['start_time','end_time','duration_s','lat','lon','place_type']].to_html(index=False)
+        html += final_stops[['lat','lon','place_type']].to_html(index=False)
         html += "</div>"
 
     # Évaluation Home/Work pour ce segment
@@ -260,7 +325,9 @@ def render_segment_report(
 
 def generate_full_report(
     df_all,
+    stops_summary_all,
     merged_grouped_stops,
+    final_classified_stops,
     final_merged_stops,
     final_evaluation_merged,
     matched_unknowns_df 
@@ -276,10 +343,8 @@ def generate_full_report(
     """
     html = "<hr style=\"margin: 40px 0;\">\n"
     html += "<h2>Résultat final </h2>\n"
-    html = "<hr style=\"margin: 40px 0;\">\n"
-    html += "<h2>Résultat final (fusion de tous les segments)</h2>\n"
 
-    # 🔽 Résumé global
+    # Résumé global
     html += """
     <h3>Résumé global</h3>
     <ul>
@@ -316,31 +381,109 @@ def generate_full_report(
         <li><strong>Fréquence moyenne d’échantillonnage :</strong> un point toutes les {df_all['time_diff_s'].mean():.1f} secondes</li>
     </ul>
     """
+    # juste avant de construire la carte globale
+    stops_summary_all = detect_stops_with_movingpandas(
+        df_all,
+        min_duration_minutes=15,
+        max_diameter_meters=75
+    )
 
     # 1) Carte interactive globale
     html += "<h3>Carte interactive globale</h3>\n"
-    map_global = generate_interactive_map(df_all, None, merged_grouped_stops, final_merged_stops)
+    map_global = generate_interactive_map(df_all, stops_summary_all, merged_grouped_stops, final_merged_stops)
     html += map_global
 
-    # 2) Stops regroupés (tous segments, avant classification)
+    # 1bis) Stops bruts MovingPandas
     html += """
-    <h3>Stops regroupés (tous segments confondus)</h3>
+    <h3>Stops bruts détectés par MovingPandas</h3>
     <div class="table-container">
     """
-    html += merged_grouped_stops[['start_time','end_time','duration_s','lat','lon','group_size']].to_html(index=False)
+    html += stops_summary_all[['start_time','end_time','duration_s','lat','lon']].to_html(index=False)
     html += "</div>\n"
 
-    # 3) Lieux classifiés finaux (après fusion close stops)
+
+    # 3) Lieux classifiés: Home / Work / Autre + DBSCAN
     html += """
-    <h3>Lieux classifiés finaux (fusion close stops) : Home / Work / Autre</h3>
+    <h3>Lieux classifiés: Home / Work / Autre + DBSCAN</h3>
     <div class="table-container">
     """
-    html += final_merged_stops[['start_time','end_time','duration_s','lat','lon','place_type']].to_html(index=False)
+    html += final_classified_stops[['lat','lon','place_type']].to_html(index=False)
     html += "</div>\n"
+    
+
+        # ─── 1bis) Stops bruts MovingPandas → affectation place_type ───
+    html += "<h3>Lieux classifiés finaux </h3>\n"
+
+    # 1) GeoDataFrames
+    gdf_raw = gpd.GeoDataFrame(
+        stops_summary_all,
+        geometry=gpd.points_from_xy(stops_summary_all.lon, stops_summary_all.lat),
+        crs="EPSG:4326"
+    )
+    gdf_final = gpd.GeoDataFrame(
+        final_merged_stops,
+        geometry=gpd.points_from_xy(final_merged_stops.lon, final_merged_stops.lat),
+        crs="EPSG:4326"
+    )
+
+    # 2) Projection métrique pour distances
+    gdf_raw = gdf_raw.to_crs(epsg=3857)
+    gdf_final = gdf_final.to_crs(epsg=3857)
+
+    # 3) Jointure au plus proche dans 150 m
+    joined = gpd.sjoin_nearest(
+        gdf_raw,
+        gdf_final[['place_type','geometry']],
+        how='left',
+        max_distance=150,
+        distance_col='distance_m'
+    )
+
+    # 4) Affichage du tableau
+    html += '<div class="table-container">\n'
+    html += joined[[
+        'start_time','end_time','duration_s','lat','lon','place_type','distance_m'
+    ]].to_html(index=False)
+    html += "</div>\n"
+
+    # … code précédent …
+    joined = gpd.sjoin_nearest(
+        gdf_raw,
+        gdf_final[['place_type','geometry']],
+        how='left',
+        max_distance=150,
+        distance_col='distance_m'
+    )
+
+    # On retransforme en tz-naive et on garde juste les colonnes utiles
+    joined = joined.drop(columns='geometry').copy()
+    joined['start_time'] = pd.to_datetime(joined['start_time']).dt.tz_localize(None)
+    joined['end_time']   = pd.to_datetime(joined['end_time']).dt.tz_localize(None)
+
+
+    # # 2) Stops regroupés (tous segments, avant classification)
+    # html += """
+    # <h3>Stops regroupés </h3>
+    # <div class="table-container">
+    # """
+    # html += merged_grouped_stops[['start_time','end_time','duration_s','lat','lon','group_size']].to_html(index=False)
+    # html += "</div>\n"
+
+    # # 6) Correspondance des lieux "autres" avec les activités détectées
+    # if matched_unknowns_df is not None and not matched_unknowns_df.empty:
+    #     html += """
+    #     <h3>Correspondance des lieux "autres" avec les activités </h3>
+    #     <div class="table-container">
+    #     """
+    #     html += matched_unknowns_df[['start_time','end_time','duration_s','lat','lon','matched_activity']].to_html(index=False)
+    #     html += "</div>\n"
+
+    html += plot_rolling_speed(df_all, window_min=10)
+    html += plot_rolling_speed_with_place(df_all, final_merged_stops, window_min=10)
 
     # 4) Évaluation finale Home/Work
     html += """
-    <h3>Évaluation finale Home / Work (après fusion close stops)</h3>
+    <h3>Évaluation finale Home / Work </h3>
     <ul>
     """
     for k, v in final_evaluation_merged['nombre_lieux_par_type'].items():
@@ -384,14 +527,6 @@ def generate_full_report(
     #    h) Heatmap Vitesses moyennes – Date × Heure
     html += "<h3>Heatmap des vitesses moyennes – Date × Heure</h3>"
     html += f"<img src=\"data:image/png;base64,{figs['heatmap_vitesse_date_hour']}\" width=\"900\"/><br>"
-    # 6) Correspondance des lieux "autres" avec les activités détectées
-    if matched_unknowns_df is not None and not matched_unknowns_df.empty:
-        html += """
-        <h3>Correspondance des lieux "autres" avec les activités détectées</h3>
-        <div class="table-container">
-        """
-        html += matched_unknowns_df[['start_time','end_time','duration_s','lat','lon','matched_activity']].to_html(index=False)
-        html += "</div>\n"
 
     # 6) Fin du fichier HTML
     html += "</body>\n</html>"

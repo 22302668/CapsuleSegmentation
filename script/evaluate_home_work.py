@@ -1,8 +1,13 @@
-from matplotlib import pyplot as plt
 import seaborn as sns
 import pandas as pd
 from io import BytesIO
 import base64
+import plotly.express as px
+import pandas as pd
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import numpy as np
+import matplotlib.dates as mdates
 
 def fig_to_base64(fig):
     buf = BytesIO()
@@ -76,3 +81,81 @@ def evaluate_home_work_classification(classified_stops):
     results['duree_cumulee_minutes'] = duration_stats.to_dict()
 
     return results
+
+def plot_rolling_speed(df, window_min=10) -> str:
+    """
+    Trace la vitesse moyenne glissante minute-par-minute,
+    avec une couleur différente par date.
+    
+    Args:
+        df (pd.DataFrame): doit contenir ['timestamp','speed_kmh'].
+        window_min (int): taille de la fenêtre glissante (en minutes).
+    Returns:
+        str: HTML embed Plotly
+    """
+    # 1) Préparation et resampling à 1 min
+    df = df.copy()
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.set_index('timestamp').sort_index()
+    
+    # On interpole les vitesses manquantes puis on lisse
+    speed_1min = df['speed_kmh'].resample('1T').mean().interpolate()
+    speed_smooth = speed_1min.rolling(window=window_min, min_periods=1).mean()
+    
+    # 2) Remettre en DataFrame et extraire la date
+    dfm = speed_smooth.reset_index().rename(columns={'speed_kmh':'speed_kmh_smooth'})
+    dfm['date'] = dfm['timestamp'].dt.date
+    
+    # 3) Tracé Plotly
+    fig = px.line(
+        dfm,
+        x='timestamp',
+        y='speed_kmh_smooth',
+        color='date',
+        labels={
+            'timestamp': "Heure",
+            'speed_kmh_smooth': f"Vitesse lissée sur {window_min} min (km/h)",
+            'date': "Date"
+        },
+        title=f"Vitesse moyenne glissante ({window_min} min) par minute et par jour"
+    )
+    fig.update_xaxes(
+        dtick=600000,  # tick toutes les 10 min
+        tickformat="%H:%M"
+    )
+    fig.update_layout(
+        margin=dict(l=50, r=50, t=50, b=50),
+        legend=dict(title="Date", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig.to_html(full_html=False, include_plotlyjs='cdn')
+
+def plot_rolling_speed_with_place(df_all, stops_df, window_min=10):
+    # 1) Calcul de la vitesse lissée au pas d'1 minute
+    df = df_all.copy()
+    df = df.set_index('timestamp').resample('1T').mean().interpolate()
+    df['speed_smooth'] = df['speed_kmh'].rolling(window=window_min, min_periods=1).mean()
+    df = df.reset_index()
+
+    # 2) On crée une colonne place_type par intervalle
+    #    Par défaut 'autre'
+    df['place_type'] = 'autre'
+    for _, stop in stops_df.iterrows():
+        mask = (df['timestamp'] >= stop['start_time']) & (df['timestamp'] <= stop['end_time'])
+        df.loc[mask, 'place_type'] = stop['place_type']
+
+    # 3) Tracé avec Plotly Express
+    fig = px.line(
+        df,
+        x='timestamp',
+        y='speed_smooth',
+        color='place_type',
+        line_dash='place_type',
+        labels={
+            'timestamp': "Temps",
+            'speed_smooth': f"Vitesse lissée sur {window_min} min (km/h)",
+            'place_type': "Type de lieu"
+        },
+        title=f"Vitesse lissée sur {window_min} min, coloriée par place_type"
+    )
+    fig.update_layout(legend=dict(title="Lieu"))
+    return fig.to_html(full_html=False, include_plotlyjs='cdn')
