@@ -12,7 +12,7 @@ def load_data_and_prepare(engine, participant_id):
 
     with engine.connect() as conn:
         df = pd.read_sql_query(
-            text(f"SELECT * FROM gps_mesures WHERE participant_virtual_id = '{participant_id}'"),
+            text(f"SELECT * FROM gps_all_participants WHERE participant_virtual_id = '{participant_id}'"),
             con=conn
         )
 

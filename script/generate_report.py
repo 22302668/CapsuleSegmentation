@@ -6,8 +6,10 @@ import geopandas as gpd
 
 from detect_stops_and_analyze import generate_figures
 from movingpandas_stop_detection import detect_stops_with_movingpandas
+from scikit_mobility import detect_stops_with_skmob
 from evaluate_home_work import plot_rolling_speed, plot_rolling_speed_with_place
 from dbscan_clustering              import cluster_stops_dbscan
+from split_moves_stops import build_moves_summary
 
 def generate_interactive_map(df, stops_summary, grouped_stops, final_stops):
     """
@@ -219,7 +221,7 @@ def render_segment_report(
     grouped_stops,
     final_stops,
     evaluation,
-    matched_unknowns_df,
+    #matched_unknowns_df,
     figures_base64,  
     segment_start,
     segment_end
@@ -312,14 +314,14 @@ def render_segment_report(
             """
             html += f"<img src=\"data:image/png;base64,{evaluation['graph_hourly_distribution']}\" width=\"700\"/><br>"
 
-    # Correspondance « autres » vs activités
-    if matched_unknowns_df is not None and not matched_unknowns_df.empty:
-        html += """
-        <h3>Correspondance des lieux "autres" avec les activités détectées</h3>
-        <div class="table-container">
-        """
-        html += matched_unknowns_df[['start_time','end_time','duration_s','lat','lon','matched_activity']].to_html(index=False)
-        html += "</div>"
+    # # Correspondance « autres » vs activités
+    # if matched_unknowns_df is not None and not matched_unknowns_df.empty:
+    #     html += """
+    #     <h3>Correspondance des lieux "autres" avec les activités détectées</h3>
+    #     <div class="table-container">
+    #     """
+    #     html += matched_unknowns_df[['start_time','end_time','duration_s','lat','lon','matched_activity']].to_html(index=False)
+    #     html += "</div>"
     return html
 
 
@@ -330,7 +332,9 @@ def generate_full_report(
     final_classified_stops,
     final_merged_stops,
     final_evaluation_merged,
-    matched_unknowns_df 
+    #matched_unknowns_df,
+    ds2_all,
+    pid=None
 ):
     """
     Construit la section « Résultat final » à append dans le fichier HTML.
@@ -382,10 +386,15 @@ def generate_full_report(
     </ul>
     """
     # juste avant de construire la carte globale
-    stops_summary_all = detect_stops_with_movingpandas(
+    # stops_summary_all = detect_stops_with_movingpandas(
+    #     df_all,
+    #     min_duration_minutes=15,
+    #     max_diameter_meters=75
+    # )
+    stops_summary_all = detect_stops_with_skmob(
         df_all,
-        min_duration_minutes=15,
-        max_diameter_meters=75
+        epsilon_m=75,      # rayon en mètres
+        min_time_s=15*60 
     )
 
     # 1) Carte interactive globale
@@ -395,7 +404,7 @@ def generate_full_report(
 
     # 1bis) Stops bruts MovingPandas
     html += """
-    <h3>Stops bruts détectés par MovingPandas</h3>
+    <h3>Stops bruts détectés par scikit mobility </h3>
     <div class="table-container">
     """
     html += stops_summary_all[['start_time','end_time','duration_s','lat','lon']].to_html(index=False)
@@ -492,7 +501,23 @@ def generate_full_report(
     for k, v in final_evaluation_merged['duree_cumulee_minutes'].items():
         html += f"<li><strong>{k}</strong> : {v:.1f} min</li>\n"
     html += "</ul>\n"
+    
+    # == Partie résumé des moves (intervalles entre les stops) ==
+    html += "<h2>Résumé des déplacements (Moves)</h2>"
+    try:
+        moves_summary = build_moves_summary(ds2_all)
 
+        # Export CSV
+        if pid  is not None:
+            export_path = f"outputs/{pid }/moves_summary.csv"
+            moves_summary.to_csv(export_path, index=False)
+
+        # Affichage HTML
+        html += moves_summary.to_html(index=False)
+    except Exception as e:
+        html += f"<p style='color:red;'>Erreur lors de la génération du résumé des moves : {e}</p>"
+
+    
     # 5) Graphiques « Vitesse » finaux (appel à generate_figures)
     # On regénère uniquement la partie “analyse de vitesse” sur le DataFrame complet
     figs = generate_figures(df_all, final_merged_stops, None)

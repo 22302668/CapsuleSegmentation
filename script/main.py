@@ -3,9 +3,11 @@ import os
 import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from pathlib import Path
 
 from load_and_preprocess         import load_data_and_prepare, segment_by_data_weeks
-from movingpandas_stop_detection import detect_stops_with_movingpandas
+#from movingpandas_stop_detection import detect_stops_with_movingpandas
+from scikit_mobility import detect_stops_with_skmob
 from classify_home_work          import classify_home_work
 from evaluate_home_work          import evaluate_home_work_classification
 from detect_stops_and_analyze    import generate_figures
@@ -34,11 +36,17 @@ def generate_report_for_participant(df, participant_id, engine):
         ].reset_index(drop=True)
 
         # 3) détection brute de stops
-        stops_summary = detect_stops_with_movingpandas(
+        # stops_summary = detect_stops_with_movingpandas(
+        #     df_seg,
+        #     min_duration_minutes=15,
+        #     max_diameter_meters=75
+        # )
+        stops_summary = detect_stops_with_skmob(
             df_seg,
-            min_duration_minutes=15,
-            max_diameter_meters=75
+            epsilon_m=75,      # rayon en mètres
+            min_time_s=15*60    # durée min en secondes
         )
+
         if stops_summary.empty:
             segment_htmls.append(
                 f"<hr><h2>Segment {idx} : {d_start} → {d_end}</h2>"
@@ -76,7 +84,7 @@ def generate_report_for_participant(df, participant_id, engine):
             grouped_stops,
             classified,
             evaluation,
-            pd.DataFrame(),  # matched_unknowns_df vide ici
+            #pd.DataFrame(),  # matched_unknowns_df vide ici
             figures,
             d_start,
             d_end
@@ -94,24 +102,36 @@ def generate_report_for_participant(df, participant_id, engine):
         final_classified['start_time'] = final_classified['start_time'].dt.tz_localize(None)
         final_classified['end_time']   = final_classified['end_time'].dt.tz_localize(None)
 
-        matched, _       = verify_stop_activities(
-            final_classified, engine, participant_id
-        )
-        matched_unknowns = (
-            matched[matched['place_type']=='autre'].copy()
-            if not matched.empty else pd.DataFrame()
-        )
+        # matched, _       = verify_stop_activities(
+        #     final_classified, engine, participant_id
+        # )
+        # matched_unknowns = (
+        #     matched[matched['place_type']=='autre'].copy()
+        #     if not matched.empty else pd.DataFrame()
+        # )
     else:
         final_classified = merged
         final_evaluation = {}
-        matched_unknowns = pd.DataFrame()
+        #matched_unknowns = pd.DataFrame()
 
     # 7) génération de la section « Résultat final »
-    stops_summary_all = detect_stops_with_movingpandas(
-        df, 
-        min_duration_minutes=15, 
-        max_diameter_meters=75
+    # stops_summary_all = detect_stops_with_movingpandas(
+    #     df, 
+    #     min_duration_minutes=15, 
+    #     max_diameter_meters=75
+    # )
+
+    stops_summary_all = detect_stops_with_skmob(
+        df,
+        epsilon_m=75,      # rayon en mètres
+        min_time_s=15*60 
     )
+
+    # dans main ou generate_report_for_participant global
+    ds1_all, ds2_all = split_stops_moves(df, stops_summary_all)
+    ds1_all.to_csv(f"data/{participant_id}_all_stops.csv", index=False)
+    ds2_all.to_csv(f"data/{participant_id}_all_moves.csv", index=False)
+    
     full_section = generate_full_report(
         df,
         stops_summary_all,       # ← passe les stops bruts MovingPandas
@@ -119,15 +139,9 @@ def generate_report_for_participant(df, participant_id, engine):
         final_classified,
         final_classified,
         final_evaluation,
-        matched_unknowns         # ← passe la table de 'autre' jointe aux activités
+        #matched_unknowns,
+        ds2_all         # ← passe la table de 'autre' jointe aux activités
     )
-
-    # dans main ou generate_report_for_participant global
-    ds1_all, ds2_all = split_stops_moves(df, stops_summary_all)
-    ds1_all.to_csv(f"data/{participant_id}_all_stops.csv", index=False)
-    ds2_all.to_csv(f"data/{participant_id}_all_moves.csv", index=False)
-
-
     # 8) écriture du rapport complet
     with open(rapport_path, "w", encoding="utf-8") as f:
         f.write(
@@ -146,7 +160,10 @@ def generate_report_for_participant(df, participant_id, engine):
         for html in segment_htmls:
             f.write(html)
         f.write("</body></html>")
+        export_dir = Path("data")
+        export_dir.mkdir(parents=True, exist_ok=True)
 
+        final_classified.to_csv(export_dir / f"{participant_id}_classified_places.csv", index=False)
     print(f"Rapport généré → {rapport_path}")
 
 
@@ -161,7 +178,7 @@ def main():
 
     with engine.connect() as conn:
         participants = pd.read_sql_query(
-            text("SELECT DISTINCT participant_virtual_id FROM gps_mesures"),
+            text("SELECT DISTINCT participant_virtual_id FROM gps_all_participants"),
             conn
         )['participant_virtual_id'].tolist()
 
