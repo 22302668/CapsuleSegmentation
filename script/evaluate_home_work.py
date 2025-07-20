@@ -34,7 +34,7 @@ def evaluate_home_work_classification(classified_stops):
     # Chaque lieu aura alors une liste contenant son propre start_time string.
     if 'merged_starts' not in df.columns:
         # On passe par dt.strftime pour obtenir une chaîne de caractères similaire
-        df['merged_starts'] = df['start_time'].dt.strftime('%Y-%m-%d %H:%M:%S').apply(lambda s: [s])
+        df['merged_starts'] = df['start_time'].dt.tz_convert('Europe/Paris').dt.strftime('%Y-%m-%d %H:%M:%S').apply(lambda s: [s])
 
     results = {}
 
@@ -53,7 +53,7 @@ def evaluate_home_work_classification(classified_stops):
         starts = row['merged_starts']
         if isinstance(starts, list):
             for ts in starts:
-                h = pd.to_datetime(ts).hour
+                h = pd.to_datetime(ts, utc=True).tz_convert('Europe/Paris').hour
                 time_stats.append({
                     'place_type': row['place_type'],
                     'hour': h
@@ -73,8 +73,9 @@ def evaluate_home_work_classification(classified_stops):
         plt.xlabel("Heure (0–23 h)")
         plt.ylabel("Nombre d'intervalles")
         plt.tight_layout()
-        results['graph_hourly_distribution'] = fig_to_base64(plt.gcf())
-        plt.close()
+        fig = plt.gcf()
+        results['graph_hourly_distribution'] = fig_to_base64(fig)
+        plt.close(fig)
 
     # 4. Durée cumulée (en minutes) par type
     duration_stats = df.groupby('place_type')['duration_s'].sum() / 60.0
@@ -95,7 +96,7 @@ def plot_rolling_speed(df, window_min=10) -> str:
     """
     # 1) Préparation et resampling à 1 min
     df = df.copy()
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert("Europe/Paris")
     df = df.set_index('timestamp').sort_index()
     
     # On interpole les vitesses manquantes puis on lisse
@@ -132,93 +133,97 @@ def plot_rolling_speed(df, window_min=10) -> str:
 import pandas as pd
 import plotly.express as px
 
-def plot_rolling_speed_with_place(df_all, stops_df, window_min=10, by_day=False):
-    """
-    Trace la vitesse moyenne lissée avec :
-    - couleur différente pour chaque jour ou selon weekday/weekend
-    - style de ligne différent selon place_type (Home, Work, autre)
-    - option : un graphe global ou un graphe par jour
+# def plot_rolling_speed_with_place(df_all, stops_df, window_min=10, by_day=False):
+#     """
+#     Trace la vitesse moyenne lissée avec :
+#     - couleur différente pour chaque jour ou selon weekday/weekend
+#     - style de ligne différent selon place_type (Home, Work, autre)
+#     - option : un graphe global ou un graphe par jour
 
-    Returns:
-        str: HTML (Plotly)
-    """
-    # 1. Lissage de la vitesse
-    df = df_all.copy()
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df = df.set_index('timestamp').resample('1T').mean().interpolate()
-    df['speed_smooth'] = df['speed_kmh'].rolling(window=window_min, min_periods=1).mean()
-    df = df.reset_index()
+#     Returns:
+#         str: HTML (Plotly)
+#     """
+#     # 1. Lissage de la vitesse
+#     df = df_all.copy()
+#     df['timestamp'] = pd.to_datetime(df['timestamp'])
+#     df = df.set_index('timestamp').resample('1T').mean().interpolate()
+#     df['speed_smooth'] = df['speed_kmh'].rolling(window=window_min, min_periods=1).mean()
+#     df = df.reset_index()
 
-    # 2. Attribution des types de lieu (Home / Work / autre)
-    df['place_type'] = 'autre'
-    for _, stop in stops_df.iterrows():
-        import pytz
+#     # 2. Attribution des types de lieu (Home / Work / autre)
+#     df['place_type'] = 'autre'
+#     for _, stop in stops_df.iterrows():
+#         import pytz
 
-        # Assure-toi que 'Europe/Paris' est utilisé pour tout
-        paris_tz = pytz.timezone("Europe/Paris")
-        start = stop['start_time']
-        end = stop['end_time']
+#         # Assure-toi que 'Europe/Paris' est utilisé pour tout
+#         paris_tz = pytz.timezone("Europe/Paris")
+#         start = stop['start_time']
+#         end = stop['end_time']
 
-        if start.tzinfo is None:
-            start = paris_tz.localize(start)
-        if end.tzinfo is None:
-            end = paris_tz.localize(end)
+#         if start.tzinfo is None:
+#             start = paris_tz.localize(start)
+#         if end.tzinfo is None:
+#             end = paris_tz.localize(end)
+#         if start.tzinfo is not None:
+#             start = start.tz_localize(None)
+#         if end.tzinfo is not None:
+#             end = end.tz_localize(None)
 
-        mask = (df['timestamp'] >= start) & (df['timestamp'] <= end)
+#         mask = (df['timestamp'] >= start) & (df['timestamp'] <= end)
 
-        df.loc[mask, 'place_type'] = stop['place_type']
+#         df.loc[mask, 'place_type'] = stop['place_type']
 
-    # 3. Ajouter colonnes jour et weekend/weekday
-    df['jour'] = df['timestamp'].dt.date
-    df['weekday_name'] = df['timestamp'].dt.day_name()
-    df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Weekend' if x >= 5 else 'Weekday')
+#     # 3. Ajouter colonnes jour et weekend/weekday
+#     df['jour'] = df['timestamp'].dt.date
+#     df['weekday_name'] = df['timestamp'].dt.day_name()
+#     df['day_type'] = df['timestamp'].dt.weekday.apply(lambda x: 'Weekend' if x >= 5 else 'Weekday')
 
-    if by_day:
-        # Tracé par jour séparé
-        html_parts = []
-        for day in sorted(df['jour'].unique()):
-            df_day = df[df['jour'] == day]
-            fig = px.line(
-                df_day,
-                x='timestamp',
-                y='speed_smooth',
-                color='place_type',
-                line_dash='place_type',
-                title=f"Vitesse lissée ({window_min} min) – {day} ({df_day['weekday_name'].iloc[0]})",
-                labels={
-                    'speed_smooth': 'Vitesse (km/h)',
-                    'timestamp': 'Heure',
-                    'place_type': 'Type de lieu'
-                }
-            )
-            fig.update_xaxes(dtick=600000, tickformat="%H:%M")
-            fig.update_layout(
-                margin=dict(l=40, r=40, t=50, b=40),
-                legend=dict(title="Type de lieu")
-            )
-            html_parts.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
-        return "<br><br>".join(html_parts)
+#     if by_day:
+#         # Tracé par jour séparé
+#         html_parts = []
+#         for day in sorted(df['jour'].unique()):
+#             df_day = df[df['jour'] == day]
+#             fig = px.line(
+#                 df_day,
+#                 x='timestamp',
+#                 y='speed_smooth',
+#                 color='place_type',
+#                 line_dash='place_type',
+#                 title=f"Vitesse lissée ({window_min} min) – {day} ({df_day['weekday_name'].iloc[0]})",
+#                 labels={
+#                     'speed_smooth': 'Vitesse (km/h)',
+#                     'timestamp': 'Heure',
+#                     'place_type': 'Type de lieu'
+#                 }
+#             )
+#             fig.update_xaxes(dtick=600000, tickformat="%H:%M")
+#             fig.update_layout(
+#                 margin=dict(l=40, r=40, t=50, b=40),
+#                 legend=dict(title="Type de lieu")
+#             )
+#             html_parts.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+#         return "<br><br>".join(html_parts)
 
-    else:
-        # Graphique global avec couleur selon weekday/weekend et dash par type
-        fig = px.line(
-            df,
-            x='timestamp',
-            y='speed_smooth',
-            color='day_type',
-            line_dash='place_type',
-            title=f"Vitesse lissée ({window_min} min) – Weekday vs Weekend",
-            labels={
-                'speed_smooth': 'Vitesse (km/h)',
-                'timestamp': 'Heure',
-                'day_type': 'Jour',
-                'place_type': 'Type de lieu'
-            }
-        )
-        fig.update_xaxes(dtick=600000, tickformat="%H:%M")
-        fig.update_layout(
-            margin=dict(l=50, r=50, t=50, b=50),
-            legend=dict(title="Jour", orientation="h", y=1.02, x=1, xanchor="right"),
-        )
-        return fig.to_html(full_html=False, include_plotlyjs='cdn')
+#     else:
+#         # Graphique global avec couleur selon weekday/weekend et dash par type
+#         fig = px.line(
+#             df,
+#             x='timestamp',
+#             y='speed_smooth',
+#             color='day_type',
+#             line_dash='place_type',
+#             title=f"Vitesse lissée ({window_min} min) – Weekday vs Weekend",
+#             labels={
+#                 'speed_smooth': 'Vitesse (km/h)',
+#                 'timestamp': 'Heure',
+#                 'day_type': 'Jour',
+#                 'place_type': 'Type de lieu'
+#             }
+#         )
+#         fig.update_xaxes(dtick=600000, tickformat="%H:%M")
+#         fig.update_layout(
+#             margin=dict(l=50, r=50, t=50, b=50),
+#             legend=dict(title="Jour", orientation="h", y=1.02, x=1, xanchor="right"),
+#         )
+#         return fig.to_html(full_html=False, include_plotlyjs='cdn')
 

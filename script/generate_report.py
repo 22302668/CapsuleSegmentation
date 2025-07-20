@@ -5,9 +5,9 @@ import pandas as pd
 import geopandas as gpd
 
 from detect_stops_and_analyze import generate_figures
-from movingpandas_stop_detection import detect_stops_with_movingpandas
+from movingpandas_stop_detection import detect_stops_and_moves
 from scikit_mobility import detect_stops_with_skmob
-from evaluate_home_work import plot_rolling_speed, plot_rolling_speed_with_place
+from evaluate_home_work import plot_rolling_speed
 from dbscan_clustering              import cluster_stops_dbscan
 from split_moves_stops import build_moves_summary
 
@@ -30,7 +30,7 @@ def generate_interactive_map(df, stops_summary, grouped_stops, final_stops):
 
     # 2) Calque par jour
     if 'timestamp' in df.columns:
-        df['day'] = pd.to_datetime(df['timestamp']).dt.date
+        df['day'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert("Europe/Paris").dt.date
         for day, group in df.groupby('day'):
             fg_jour = folium.FeatureGroup(name=f"Trajet {day}", show=False)
             coords = group[['lat', 'lon']].dropna().values.tolist()
@@ -329,11 +329,10 @@ def generate_full_report(
     df_all,
     stops_summary_all,
     merged_grouped_stops,
-    final_classified_stops,
-    final_merged_stops,
+    final_stops,
     final_evaluation_merged,
     #matched_unknowns_df,
-    ds2_all,
+    moves_summary,
     pid=None
 ):
     """
@@ -386,20 +385,22 @@ def generate_full_report(
     </ul>
     """
     # juste avant de construire la carte globale
-    # stops_summary_all = detect_stops_with_movingpandas(
-    #     df_all,
-    #     min_duration_minutes=15,
-    #     max_diameter_meters=75
-    # )
-    stops_summary_all = detect_stops_with_skmob(
+    stops_summary_all, raw_moves_all = detect_stops_and_moves(
         df_all,
-        epsilon_m=75,      # rayon en mètres
-        min_time_s=15*60 
+        min_duration_minutes=5,
+        max_diameter_meters=100,
+        min_move_duration_s=30,
+        min_time_gap_s=900
     )
+    # stops_summary_all = detect_stops_with_skmob(
+    #     df_all,
+    #     epsilon_m=75,      # rayon en mètres
+    #     min_time_s=15*60 
+    # )
 
     # 1) Carte interactive globale
     html += "<h3>Carte interactive globale</h3>\n"
-    map_global = generate_interactive_map(df_all, stops_summary_all, merged_grouped_stops, final_merged_stops)
+    map_global = generate_interactive_map(df_all, stops_summary_all, merged_grouped_stops, final_stops)
     html += map_global
 
     # 1bis) Stops bruts MovingPandas
@@ -416,7 +417,7 @@ def generate_full_report(
     <h3>Lieux classifiés: Home / Work / Autre + DBSCAN</h3>
     <div class="table-container">
     """
-    html += final_classified_stops[['lat','lon','place_type']].to_html(index=False)
+    html += final_stops[['lat','lon','place_type']].to_html(index=False)
     html += "</div>\n"
     
 
@@ -430,8 +431,8 @@ def generate_full_report(
         crs="EPSG:4326"
     )
     gdf_final = gpd.GeoDataFrame(
-        final_merged_stops,
-        geometry=gpd.points_from_xy(final_merged_stops.lon, final_merged_stops.lat),
+        final_stops,
+        geometry=gpd.points_from_xy(final_stops.lon, final_stops.lat),
         crs="EPSG:4326"
     )
 
@@ -488,7 +489,7 @@ def generate_full_report(
     #     html += "</div>\n"
 
     html += plot_rolling_speed(df_all, window_min=10)
-    html += plot_rolling_speed_with_place(df_all, final_merged_stops, window_min=10)
+    #html += plot_rolling_speed_with_place(df_all, final_merged_stops, window_min=10)
 
     # 4) Évaluation finale Home/Work
     html += """
@@ -502,25 +503,22 @@ def generate_full_report(
         html += f"<li><strong>{k}</strong> : {v:.1f} min</li>\n"
     html += "</ul>\n"
     
-    # == Partie résumé des moves (intervalles entre les stops) ==
-    html += "<h2>Résumé des déplacements (Moves)</h2>"
-    try:
-        moves_summary = build_moves_summary(ds2_all)
+    html += "<h3>Résumé des déplacements (Moves)</h3>\n"
+    # on convertit au besoin les timestamps en tz‑naive pour éviter les décalages HTML
+    df_moves = moves_summary.copy()
+    if 'start_time' in df_moves.columns:
+        df_moves['start_time'] = pd.to_datetime(df_moves['start_time']).dt.tz_localize(None)
+    if 'end_time' in df_moves.columns:
+        df_moves['end_time']   = pd.to_datetime(df_moves['end_time']).dt.tz_localize(None)
 
-        # Export CSV
-        if pid  is not None:
-            export_path = f"outputs/{pid }/moves_summary.csv"
-            moves_summary.to_csv(export_path, index=False)
+    html += "<div class=\"table-container\">\n"
+    html += df_moves.to_html(index=False)
+    html += "</div>\n"
 
-        # Affichage HTML
-        html += moves_summary.to_html(index=False)
-    except Exception as e:
-        html += f"<p style='color:red;'>Erreur lors de la génération du résumé des moves : {e}</p>"
 
-    
     # 5) Graphiques « Vitesse » finaux (appel à generate_figures)
     # On regénère uniquement la partie “analyse de vitesse” sur le DataFrame complet
-    figs = generate_figures(df_all, final_merged_stops, None)
+    figs = generate_figures(df_all, final_stops, None)
     #    a) Distribution des vitesses
     html += "<h3>Distribution des vitesses</h3>"
     html += f"<img src=\"data:image/png;base64,{figs['distribution_vitesse']}\" width=\"700\"/><br>"

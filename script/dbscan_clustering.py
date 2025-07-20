@@ -17,8 +17,8 @@ def cluster_stops_dbscan(
     # 1) Aligne les timezones des stops sur celles du gps_df
     tz = gps_df['timestamp'].dt.tz
     stops = stops_df.copy()
-    stops['start_time'] = pd.to_datetime(stops['start_time'])
-    stops['end_time']   = pd.to_datetime(stops['end_time'])
+    stops['start_time'] = pd.to_datetime(stops['start_time'], utc=True).dt.tz_convert('Europe/Paris')
+    stops['end_time']   = pd.to_datetime(stops['end_time'], utc=True).dt.tz_convert('Europe/Paris')
 
     # Si tz-naive, localize ; sinon convert
     if stops['start_time'].dt.tz is None:

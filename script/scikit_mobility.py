@@ -4,8 +4,8 @@ from skmob.preprocessing.detection import stay_locations
 
 def detect_stops_with_skmob(
     df: pd.DataFrame,
-    epsilon_m: float = 75,
-    min_time_s: int = 15 * 60
+    epsilon_m: float = 100,
+    min_time_s: int = 5 * 60
 ) -> pd.DataFrame:
     """
     Détecte les stops avec scikit-mobility (fonction stay_locations).

@@ -1,60 +1,101 @@
+# movingpandas_stop_detection.py
+
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
 import movingpandas as mpd
 from datetime import timedelta
 
-def detect_stops_with_movingpandas(df, min_duration_minutes=15, max_diameter_meters=75):
+def detect_stops_and_moves(
+    df: pd.DataFrame,
+    min_duration_minutes: int = 5,
+    max_diameter_meters: float = 100,
+    min_move_duration_s: float = 30,
+    min_time_gap_s: float = 900
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Détecte les stops avec MovingPandas à partir d'un DataFrame contenant 'lat', 'lon', 'timestamp'.
-    
-    Args:
-        df (pd.DataFrame): Données GPS avec colonnes 'lat', 'lon', 'timestamp'
-        min_duration_minutes (int): Durée minimale d'un arrêt (en minutes)
-        max_diameter_meters (float): Diamètre maximal de la zone de stop (en mètres)
+    Détecte les stops et les moves avec MovingPandas.
 
     Returns:
-        pd.DataFrame: Liste des stops détectés avec lat/lon, temps de début/fin, durée
+        raw_stops: DataFrame des stops bruts [start_time,end_time,duration_s,lat,lon]
+        moves:     DataFrame des moves [start_time,end_time,duration_s,
+                                       lat_origin,lon_origin,lat_dest,lon_dest]
     """
-    print(f"Points d'entrée : {len(df)}")  # Affiche le nombre total de points GPS en entrée
-    print(f"Timestamps min/max : {df['timestamp'].min()} / {df['timestamp'].max()}")  # Affiche les bornes temporelles du dataset
 
-    # Conversion en GeoDataFrame avec géométrie
-    df['geometry'] = df.apply(lambda row: Point(row['lon'], row['lat']), axis=1)  # Crée une géométrie Point pour chaque ligne à partir de lon/lat
-    gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')  # Convertit le DataFrame en GeoDataFrame avec système de coordonnées WGS84
+    # --- 0) drop tz pour MovingPandas ---
+    df = df.copy()
+    if df['timestamp'].dt.tz is not None:
+        df['timestamp'] = df['timestamp'].dt.tz_localize(None)
 
-    # Créer une trajectoire
-    trajectory = mpd.Trajectory(gdf, traj_id=1, t='timestamp')  # Crée une trajectoire MovingPandas avec un identifiant et les timestamps
+    # --- 1) GeoDataFrame ---
+    df['geometry'] = df.apply(lambda r: Point(r['lon'], r['lat']), axis=1)
+    gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4326')
 
-    # Détecter les stops
-    detector = mpd.TrajectoryStopDetector(trajectory)  # Instancie un détecteur d'arrêts pour cette trajectoire
-    stop_points = detector.get_stop_points(
-        min_duration=timedelta(minutes=min_duration_minutes),  # Durée minimale de stop
-        max_diameter=max_diameter_meters  # Diamètre spatial maximal pour considérer un arrêt
+    # --- 2) Trajectoire & détecteur ---
+    traj = mpd.Trajectory(gdf, traj_id=1, t='timestamp')
+    detector = mpd.TrajectoryStopDetector(traj)
+
+    # --- 3) Stops bruts ---
+    stops = detector.get_stop_points(
+        min_duration=timedelta(minutes=min_duration_minutes),
+        max_diameter=max_diameter_meters
     )
+    if stops.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-    print(f"{len(stop_points)} stops bruts détectés par MovingPandas")  # Affiche le nombre d’arrêts trouvés
-    print("Colonnes retournées :", stop_points.columns.tolist())  # Affiche les noms des colonnes du résultat
-
-    # Identifier dynamiquement les colonnes de début et fin
-    if stop_points.empty:
-        return pd.DataFrame(columns=['start_time', 'end_time', 'duration_s', 'lat', 'lon'])  # Retourne un DataFrame vide avec les bonnes colonnes si aucun stop n’est trouvé
-
-    start_col = 't0' if 't0' in stop_points else 'start_time'  # Choix dynamique du nom de la colonne de début selon la version de MovingPandas
-    end_col = 't1' if 't1' in stop_points else 'end_time'  # Idem pour la colonne de fin
-
-    # Calcul durée + nettoyage
-    stop_points['duration_s'] = (stop_points[end_col] - stop_points[start_col]).dt.total_seconds()  # Calcule la durée du stop en secondes
-    stop_points = stop_points.rename(columns={
-        start_col: 'start_time',  # Renomme la colonne de début
-        end_col: 'end_time',      # Renomme la colonne de fin
-        'geometry': 'stop_geom'   # Renomme la géométrie pour éviter conflit futur
+    # renommer dynamiquement les colonnes
+    start_col = 't0' if 't0' in stops.columns else 'start_time'
+    end_col   = 't1' if 't1' in stops.columns else 'end_time'
+    stops = stops.rename(columns={
+        start_col:  'start_time',
+        end_col:    'end_time',
+        'geometry': 'stop_geom'
     })
+    stops['duration_s'] = (stops['end_time'] - stops['start_time']).dt.total_seconds()
+    stops['lat'] = stops['stop_geom'].y
+    stops['lon'] = stops['stop_geom'].x
 
-    stop_points['lat'] = stop_points['stop_geom'].y  # Extrait la latitude à partir de la géométrie
-    stop_points['lon'] = stop_points['stop_geom'].x  # Extrait la longitude à partir de la géométrie
+    raw_stops = stops[[
+        'start_time','end_time','duration_s','lat','lon'
+    ]].sort_values('start_time').reset_index(drop=True)
 
-    print("\nAperçu des stops détectés :")  # Affiche un aperçu des résultats
-    print(stop_points[['start_time', 'end_time', 'duration_s', 'lat', 'lon']].head())
+    # --- 4) Moves entre stops ---
+    moves = []
+    prev_end = df['timestamp'].min()
+    for _, stop in raw_stops.iterrows():
+        window = df[
+            (df['timestamp'] >= prev_end) &
+            (df['timestamp'] <= stop['start_time'])
+        ]
+        if len(window) >= 2:
+            dt  = (window['timestamp'].iloc[-1] - window['timestamp'].iloc[0]).total_seconds()
+            gap = (stop['start_time'] - prev_end).total_seconds()
+            if dt >= min_move_duration_s and gap >= min_time_gap_s:
+                moves.append({
+                    'start_time':  window['timestamp'].iloc[0],
+                    'end_time':    window['timestamp'].iloc[-1],
+                    'duration_s':  dt,
+                    'lat_origin':  window['lat'].iloc[0],
+                    'lon_origin':  window['lon'].iloc[0],
+                    'lat_dest':    window['lat'].iloc[-1],
+                    'lon_dest':    window['lon'].iloc[-1],
+                })
+        prev_end = stop['end_time']
 
-    return stop_points[['start_time', 'end_time', 'duration_s', 'lat', 'lon']]  # Retourne le DataFrame avec les colonnes utiles
+    # move après le dernier stop
+    window = df[df['timestamp'] >= prev_end]
+    if len(window) >= 2:
+        dt = (window['timestamp'].iloc[-1] - window['timestamp'].iloc[0]).total_seconds()
+        if dt >= min_move_duration_s:
+            moves.append({
+                'start_time': window['timestamp'].iloc[0],
+                'end_time':   window['timestamp'].iloc[-1],
+                'duration_s': dt,
+                'lat_origin': window['lat'].iloc[0],
+                'lon_origin': window['lon'].iloc[0],
+                'lat_dest':   window['lat'].iloc[-1],
+                'lon_dest':   window['lon'].iloc[-1],
+            })
+
+    moves_df = pd.DataFrame(moves)
+    return raw_stops, moves_df
