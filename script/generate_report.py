@@ -11,7 +11,7 @@ from evaluate_home_work import plot_rolling_speed
 from dbscan_clustering              import cluster_stops_dbscan
 from split_moves_stops import build_moves_summary
 
-def generate_interactive_map(df, stops_summary, grouped_stops, final_stops):
+def generate_interactive_map(df, stops_summary, grouped_stops, final_stops, moves_tagged, moves_snapped):
     """
     Retourne le HTML d’une carte Folium pour un DataFrame donné.
     final_stops correspond aux arrêts déjà fusionnés / classifiés (Home/Work/autre).
@@ -211,6 +211,68 @@ def generate_interactive_map(df, stops_summary, grouped_stops, final_stops):
     #     ).add_to(fg_merged)
 
     # fg_merged.add_to(m)
+    # ───── 7) Déplacements (moves) ──────────────────────────────────────────
+    if moves_tagged is not None and not moves_tagged.empty:
+        fg_moves = folium.FeatureGroup(name=f"Moves ({len(moves_tagged)})", show=True)
+        for _, mv in moves_tagged.iterrows():
+            # tracé de la ligne du move
+            folium.PolyLine(
+                locations=[(mv.lat_origin, mv.lon_origin), (mv.lat_dest, mv.lon_dest)],
+                color="orange",
+                weight=2,
+                opacity=0.7,
+                popup=(
+                    f"<b>Durée :</b> {mv.duration_s/60:.1f} min<br>"
+                    f"<b>Dist :</b> {mv.dist_m:.0f} m<br>"
+                    f"<b>Trajet :</b> {mv.origin_type} → {mv.destination_type}"
+                )
+            ).add_to(fg_moves)
+
+            # marqueur d'origine
+            folium.CircleMarker(
+                location=[mv.lat_origin, mv.lon_origin],
+                radius=3,
+                color="darkorange",
+                fill=True, fill_opacity=0.6
+            ).add_to(fg_moves)
+
+            # marqueur de destination
+            folium.CircleMarker(
+                location=[mv.lat_dest, mv.lon_dest],
+                radius=3,
+                color="red",
+                fill=True, fill_opacity=0.6
+            ).add_to(fg_moves)
+
+        fg_moves.add_to(m)
+
+    if moves_snapped is not None and not moves_snapped.empty:
+        fg_snapped = folium.FeatureGroup(name=f"Moves recalés ({len(moves_snapped)})", show=True)
+        for _, mv in moves_snapped.iterrows():
+            folium.PolyLine(
+                locations=[(mv.lat_origin, mv.lon_origin), (mv.lat_dest, mv.lon_dest)],
+                color="purple",
+                weight=3,
+                opacity=0.9,
+                popup=f"Recalé vers {mv.snapped_origin_type}/{mv.snapped_destination_type}"
+            ).add_to(fg_snapped)
+
+            # Marqueurs
+            folium.CircleMarker(
+                location=[mv.lat_origin, mv.lon_origin],
+                radius=4,
+                color="darkorange" if not mv['snapped_origin_type'] else "purple",
+                fill=True, fill_opacity=0.8
+            ).add_to(fg_snapped)
+
+            folium.CircleMarker(
+                location=[mv.lat_dest, mv.lon_dest],
+                radius=4,
+                color="red" if not mv['snapped_destination_type'] else "purple",
+                fill=True, fill_opacity=0.8
+            ).add_to(fg_snapped)
+
+        fg_snapped.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m.get_root().render()
@@ -332,8 +394,10 @@ def generate_full_report(
     final_stops,
     final_evaluation_merged,
     #matched_unknowns_df,
-    moves_summary,
-    pid=None
+    moves_tagged,
+    moves_snapped,
+    pid=None,
+    autres_with_distances=None,
 ):
     """
     Construit la section « Résultat final » à append dans le fichier HTML.
@@ -400,12 +464,12 @@ def generate_full_report(
 
     # 1) Carte interactive globale
     html += "<h3>Carte interactive globale</h3>\n"
-    map_global = generate_interactive_map(df_all, stops_summary_all, merged_grouped_stops, final_stops)
+    map_global = generate_interactive_map(df_all, stops_summary_all, merged_grouped_stops, final_stops, moves_tagged, moves_snapped)
     html += map_global
 
     # 1bis) Stops bruts MovingPandas
     html += """
-    <h3>Stops bruts détectés par scikit mobility </h3>
+    <h3>Stops bruts détectés par MovingPandas </h3>
     <div class="table-container">
     """
     html += stops_summary_all[['start_time','end_time','duration_s','lat','lon']].to_html(index=False)
@@ -419,7 +483,6 @@ def generate_full_report(
     """
     html += final_stops[['lat','lon','place_type']].to_html(index=False)
     html += "</div>\n"
-    
 
         # ─── 1bis) Stops bruts MovingPandas → affectation place_type ───
     html += "<h3>Lieux classifiés finaux </h3>\n"
@@ -470,6 +533,15 @@ def generate_full_report(
     joined['start_time'] = pd.to_datetime(joined['start_time']).dt.tz_localize(None)
     joined['end_time']   = pd.to_datetime(joined['end_time']).dt.tz_localize(None)
 
+    # 3bis) Distances Home/Work pour les lieux "autres"
+    html += """
+    <h3>Distances entre les lieux "autres" et Home/Work</h3>
+    <p><em>Les colonnes indiquent la distance (en mètres) entre chaque lieu "autre" et les lieux Home/Work détectés. 
+    La colonne <b>suspect</b> indique si le lieu est proche (moins de 150 m) de Home ou Work.</em></p>
+    <div class="table-container">
+    """
+    html += autres_with_distances.to_html(index=False)
+    html += "</div>\n"
 
     # # 2) Stops regroupés (tous segments, avant classification)
     # html += """
@@ -488,7 +560,8 @@ def generate_full_report(
     #     html += matched_unknowns_df[['start_time','end_time','duration_s','lat','lon','matched_activity']].to_html(index=False)
     #     html += "</div>\n"
 
-    html += plot_rolling_speed(df_all, window_min=10)
+    html += plot_rolling_speed(df_all, final_stops,moves_tagged, window_min=10)
+
     #html += plot_rolling_speed_with_place(df_all, final_merged_stops, window_min=10)
 
     # 4) Évaluation finale Home/Work
@@ -504,28 +577,33 @@ def generate_full_report(
     html += "</ul>\n"
     
     html += "<h3>Résumé des déplacements (Moves)</h3>\n"
-    # on convertit au besoin les timestamps en tz‑naive pour éviter les décalages HTML
-    df_moves = moves_summary.copy()
-    if 'start_time' in df_moves.columns:
-        df_moves['start_time'] = pd.to_datetime(df_moves['start_time']).dt.tz_localize(None)
-    if 'end_time' in df_moves.columns:
-        df_moves['end_time']   = pd.to_datetime(df_moves['end_time']).dt.tz_localize(None)
+    html += moves_tagged.to_html(index=False)
 
-    html += "<div class=\"table-container\">\n"
-    html += df_moves.to_html(index=False)
-    html += "</div>\n"
-
+    html += "<h3>Moves recalés (vers Home/Work)</h3>\n"
+    snapped = moves_snapped[moves_snapped['snapped']]
+    if not snapped.empty:
+        html += snapped[['start_time','end_time','origin_type','destination_type',
+                        'snapped_origin_type','snapped_destination_type']].to_html(index=False)
+    else:
+        html += "<p><em>Aucun move recalé.</em></p>"
 
     # 5) Graphiques « Vitesse » finaux (appel à generate_figures)
     # On regénère uniquement la partie “analyse de vitesse” sur le DataFrame complet
     figs = generate_figures(df_all, final_stops, None)
+    # html += "<h3>Vitesse moyenne par heure – Semaine vs Weekend (par type de lieu)</h3>"
+    # html += f"<img src=\"data:image/png;base64,{figs['vitesse_semaine_weekend_par_lieu']}\" width=\"700\"/><br>"
     #    a) Distribution des vitesses
     html += "<h3>Distribution des vitesses</h3>"
     html += f"<img src=\"data:image/png;base64,{figs['distribution_vitesse']}\" width=\"700\"/><br>"
 
-    #    b) Distribution 0–10 km/h
-    html += "<h3>Distribution des vitesses (0–10 km/h)</h3>"
-    html += f"<img src=\"data:image/png;base64,{figs['distribution_vitesse_0_10_split']}\" width=\"700\"/><br>"
+    html += "<h3>Vitesses lentes (0–3,5 km/h)</h3>"
+    html += f"<img src=\"data:image/png;base64,{figs['dist_vitesse_0_3_5']}\" width=\"700\"/><br>"
+
+    html +="<h3>Vitesses de marche (3,5–6,5 km/h)</h3>"
+    html +=f"<img src=\"data:image/png;base64,{figs['dist_vitesse_3_5_6_5']}\" width=\"700\"/><br>"
+
+    html +="<h3>Vitesses rapides (6,5–10 km/h)</h3>"
+    html += f"<img src=\"data:image/png;base64,{figs['dist_vitesse_6_5_10']}\" width=\"700\"/><br>"
 
     #    c) Vitesses > 10 km/h
     html += "<h3>Vitesses > 10 km/h</h3>"

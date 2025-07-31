@@ -14,6 +14,8 @@ def verify_stop_activities(final_stops, engine, participant_id):
             ORDER BY "Date de début" ASC
         """), con=conn, params={"participant_id": participant_id})
 
+    
+
     # Conversion des dates
     df_activities['timestamp'] = pd.to_datetime(df_activities['timestamp'], utc=True).dt.tz_convert('Europe/Paris')
 

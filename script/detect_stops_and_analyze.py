@@ -166,29 +166,37 @@ def generate_figures(df, classified_stops, stops_summary=None):
     ax1.set_title("Distribution des vitesses (km/h)")
     figures_base64['distribution_vitesse'] = fig_to_base64(fig1)
 
-    # Histogramme fusionné (0 < v ≤ 10), 2 couleurs
+    # —————————————————————————————————————————
+    # Histogrammes segmentés pour 0–3.5, 3.5–6.5 et 6.5–10 km/h
+    # —————————————————————————————————————————
+
+    # 0–3.5 km/h
     fig2, ax2 = plt.subplots(figsize=(8, 4))
-    speed_data = df[(df['speed_kmh'] > 0) & (df['speed_kmh'] <= 10)]['speed_kmh']
-    bins = np.linspace(0, 10, 31)
-    colors = ['red' if b <= 3 else 'orange' for b in bins[:-1]]
-    counts, edges = np.histogram(speed_data, bins=bins)
-    for left, right, count, color in zip(edges[:-1], edges[1:], counts, colors):
-        ax2.bar(left, count, width=right-left, align='edge', color=color, edgecolor='black')
-    legend_elements = [
-        Patch(facecolor='red', edgecolor='black', label='0–3 km/h (stops / lent)'),
-        Patch(facecolor='orange', edgecolor='black', label='3–10 km/h (marche)'),
-    ]
-    ax2.legend(handles=legend_elements, loc='upper right')
-    ax2.set_title("Distribution des vitesses (0 < v ≤ 10 km/h)")
+    mask1 = (df['speed_kmh'] > 0) & (df['speed_kmh'] <= 3.5)
+    df.loc[mask1, 'speed_kmh'].hist(bins=np.linspace(0, 3.5, 15), ax=ax2)
+    ax2.set_title("Distribution des vitesses lentes (0–3,5 km/h)")
     ax2.set_xlabel("Vitesse (km/h)")
     ax2.set_ylabel("Nombre de points")
-    figures_base64['distribution_vitesse_0_10_split'] = fig_to_base64(fig2)
+    figures_base64['dist_vitesse_0_3_5'] = fig_to_base64(fig2)
 
+    # 3.5–6.5 km/h
+    fig6, ax6 = plt.subplots(figsize=(8, 4))
+    mask2 = (df['speed_kmh'] > 3.5) & (df['speed_kmh'] <= 6.5)
+    df.loc[mask2, 'speed_kmh'].hist(bins=np.linspace(3.5, 6.5, 15), ax=ax6)
+    ax6.set_title("Distribution des vitesses de marche (3,5–6,5 km/h)")
+    ax6.set_xlabel("Vitesse (km/h)")
+    ax6.set_ylabel("Nombre de points")
+    figures_base64['dist_vitesse_3_5_6_5'] = fig_to_base64(fig6)
 
-    ax2.set_title("Distribution des vitesses (0 < v ≤ 10 km/h)")
-    ax2.set_xlabel("Vitesse (km/h)")
-    ax2.set_ylabel("Nombre de points")
-    figures_base64['distribution_vitesse_0_10_split'] = fig_to_base64(fig2)
+    # 6.5–10 km/h
+    fig7, ax7 = plt.subplots(figsize=(8, 4))
+    mask3 = (df['speed_kmh'] > 6.5) & (df['speed_kmh'] <= 10)
+    df.loc[mask3, 'speed_kmh'].hist(bins=np.linspace(6.5, 10, 15), ax=ax7)
+    ax7.set_title("Distribution des vitesses rapides (6,5–10 km/h)")
+    ax7.set_xlabel("Vitesse (km/h)")
+    ax7.set_ylabel("Nombre de points")
+    figures_base64['dist_vitesse_6_5_10'] = fig_to_base64(fig7)
+
 
     fig3, ax3 = plt.subplots(figsize=(8, 4))
     df[df['speed_kmh'] > 10]['speed_kmh'].hist(bins=30, ax=ax3)
@@ -215,4 +223,3 @@ def generate_figures(df, classified_stops, stops_summary=None):
 
     plt.close('all')
     return figures_base64
-

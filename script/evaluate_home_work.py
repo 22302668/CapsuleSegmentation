@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import numpy as np
 import matplotlib.dates as mdates
+from plotly.subplots import make_subplots
 
 def fig_to_base64(fig):
     buf = BytesIO()
@@ -83,55 +84,98 @@ def evaluate_home_work_classification(classified_stops):
 
     return results
 
-def plot_rolling_speed(df, window_min=10) -> str:
+def plot_rolling_speed(df, stops, moves, window_min=10) -> str:
     """
-    Trace la vitesse moyenne glissante minute-par-minute,
-    avec une couleur différente par date.
-    
-    Args:
-        df (pd.DataFrame): doit contenir ['timestamp','speed_kmh'].
-        window_min (int): taille de la fenêtre glissante (en minutes).
-    Returns:
-        str: HTML embed Plotly
+    Deux sous-graphiques :
+    - Haut : vitesse brute + lissée colorée par type de lieu.
+    - Bas : timeline des déplacements (moves) avec transitions.
     """
-    # 1) Préparation et resampling à 1 min
+    # --- Préparation des données ---
     df = df.copy()
     df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert("Europe/Paris")
     df = df.set_index('timestamp').sort_index()
-    
-    # On interpole les vitesses manquantes puis on lisse
     speed_1min = df['speed_kmh'].resample('1T').mean().interpolate()
-    speed_smooth = speed_1min.rolling(window=window_min, min_periods=1).mean()
-    
-    # 2) Remettre en DataFrame et extraire la date
+    speed_smooth = speed_1min.rolling(window=window_min, min_periods=1, center=True).mean()
     dfm = speed_smooth.reset_index().rename(columns={'speed_kmh':'speed_kmh_smooth'})
-    dfm['date'] = dfm['timestamp'].dt.date
     
-    # 3) Tracé Plotly
-    fig = px.line(
-        dfm,
-        x='timestamp',
-        y='speed_kmh_smooth',
-        color='date',
-        labels={
-            'timestamp': "Heure",
-            'speed_kmh_smooth': f"Vitesse lissée sur {window_min} min (km/h)",
-            'date': "Date"
-        },
-        title=f"Vitesse moyenne glissante ({window_min} min) par minute et par jour"
+    intervals = pd.IntervalIndex.from_arrays(stops['start_time'], stops['end_time'], closed='both')
+    s_place = pd.Series(stops['place_type'].values, index=intervals)
+    dfm['place_type'] = dfm['timestamp'].apply(
+        lambda ts: s_place[s_place.index.contains(ts)].iloc[0] if not s_place[s_place.index.contains(ts)].empty else 'Move'
     )
-    fig.update_xaxes(
-        dtick=600000,  # tick toutes les 10 min
-        tickformat="%H:%M"
+
+    moves['start_time'] = pd.to_datetime(moves['start_time'], utc=True).dt.tz_convert("Europe/Paris")
+    moves['end_time'] = pd.to_datetime(moves['end_time'], utc=True).dt.tz_convert("Europe/Paris")
+    total_dist = moves['dist_m'].sum()
+    total_moves = len(moves)
+    total_duration = moves['duration_s'].sum() / 60
+
+    # --- Création des subplots ---
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, 
+        row_heights=[0.7, 0.3], vertical_spacing=0.05,
+        subplot_titles=(f"Vitesse (ROLLING {window_min} min)", "Déplacements (Timeline)")
     )
+
+    # --- Subplot 1 : Vitesse ---
+    # Vitesse brute
+    fig.add_trace(go.Scatter(
+        x=speed_1min.index, y=speed_1min,
+        mode='lines', name='Vitesse brute',
+        line=dict(color='lightgray', width=1, dash='dot')
+    ), row=1, col=1)
+
+    # Vitesse lissée par type
+    color_map = {'Home': 'blue', 'Work': 'green', 'autre': 'gray', 'Move': 'orange'}
+    for place, color in color_map.items():
+        sub = dfm[dfm['place_type'] == place]
+        if not sub.empty:
+            fig.add_trace(go.Scatter(
+                x=sub['timestamp'], y=sub['speed_kmh_smooth'],
+                mode='lines', name=place,
+                line=dict(color=color, width=2),
+                fill='tozeroy',
+                hovertemplate=(
+                    f"<b>{place}</b><br>"
+                    "Jour: %{x|%A %d-%m}<br>"
+                    "Heure: %{x|%H:%M}<br>"
+                    "Vitesse: %{y:.1f} km/h<extra></extra>"
+                ),
+                visible=True
+            ))
+
+    # --- Subplot 2 : Timeline des moves ---
+    for _, mv in moves.iterrows():
+        fig.add_trace(go.Scatter(
+            x=[mv['start_time'], mv['end_time']],
+            y=[1, 1],
+            mode='lines',
+            line=dict(color='orange', width=8),
+            name=f"{mv['origin_type']} → {mv['destination_type']}",
+            hovertemplate=(
+                f"<b>Move</b><br>"
+                f"{mv['origin_type']} → {mv['destination_type']}<br>"
+                f"Durée: {mv['duration_s']/60:.1f} min<br>"
+                f"Distance: {mv['dist_m']:.1f} m<extra></extra>"
+            ),
+            showlegend=True
+        ), row=2, col=1)
+
+    # --- Mise en forme générale ---
     fig.update_layout(
-        margin=dict(l=50, r=50, t=50, b=50),
-        legend=dict(title="Date", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        title=f"Vitesse & Déplacements – ROLLING ({window_min} min)<br>"
+              f"<span style='font-size:14px'>Total déplacements : {total_moves}, "
+              f"Distance : {total_dist/1000:.1f} km, Durée : {total_duration:.1f} min</span>",
+        xaxis=dict(title="Heure", tickformat="%d-%m %H:%M"),
+        yaxis=dict(title="Vitesse (km/h)"),
+        yaxis2=dict(title="Déplacements", showticklabels=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
+        margin=dict(l=50, r=50, t=80, b=50),
+        height=700
     )
+
     return fig.to_html(full_html=False, include_plotlyjs='cdn')
 
-import pandas as pd
-import plotly.express as px
 
 # def plot_rolling_speed_with_place(df_all, stops_df, window_min=10, by_day=False):
 #     """

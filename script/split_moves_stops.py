@@ -84,87 +84,134 @@ def build_moves_summary(
 
     return pd.DataFrame(moves)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
 logger = logging.getLogger(__name__)
 
 def tag_moves_with_stop_types(
     moves: pd.DataFrame,
     stops: pd.DataFrame,
-    max_dist_m: float = 100
+    max_dist_m: float = 200
 ) -> pd.DataFrame:
     """
-    Pour chaque move, on rattache le type (Home/Work/Autre) du stop
-    le plus proche en début et en fin de segment, en considérant
-    uniquement les stops à moins de max_dist_m (distance euclidienne en mètres).
+    Pour chaque déplacement (move), assigne un type d'origine et de destination
+    en fonction du stop le plus proche.
+
+    Args:
+        moves (pd.DataFrame): DataFrame avec colonnes ['lat_origin','lon_origin','lat_dest','lon_dest']
+        stops (pd.DataFrame): DataFrame des arrêts avec colonnes ['lat','lon','place_type']
+        max_dist_m (float): distance max pour rattacher un move à un stop (mètres)
+
+    Returns:
+        pd.DataFrame: moves enrichi de colonnes ['origin_type','destination_type']
     """
+    logger.info(f"tag_moves_with_stop_types: {len(moves)} moves, {len(stops)} stops, max_dist_m={max_dist_m}")
 
-    logger.info(f"▶ Entrée tag_moves_with_stop_types | "
-                f"moves: {len(moves)} lignes, stops: {len(stops)} lignes")
-
-    # Cas trivial : retourne tout en 'unknown'
-    if moves.empty or stops.empty:
-        logger.warning("⚠️ Pas de moves ou pas de stops → tous les types passent à 'unknown'")
-        mv = moves.copy()
-        mv['origin_type']      = 'unknown'
-        mv['destination_type'] = 'unknown'
-        mv['transition']       = mv['origin_type'] + ' → ' + mv['destination_type']
-        logger.info(f"◀ Sortie tag_moves_with_stop_types | {len(mv)} moves étiquetés en 'unknown'")
-        return mv
-
-    # 1) Stops → GeoDataFrame en mètres
-    stops = stops.copy()
-    stops['stop_geom'] = stops.apply(
-        lambda r: Point(r['lon'], r['lat']), axis=1
-    )
+    # 1) Construire GeoDataFrame des stops
     gdf_stops = gpd.GeoDataFrame(
-        stops, geometry='stop_geom', crs='EPSG:4326'
-    ).to_crs(epsg=3857)
-    logger.info(f"• gdf_stops projeté en EPSG:3857 ({len(gdf_stops)} arrêts)")
-
-    # 2) Moves → GeoDataFrame avec origines/destinations en mètres
-    mv = moves.copy()
-    mv['origin_geom'] = mv.apply(
-        lambda r: Point(r['lon_origin'], r['lat_origin']), axis=1
+        stops.copy(),
+        geometry=gpd.points_from_xy(stops['lon'], stops['lat']),
+        crs='EPSG:4326'
     )
-    mv['dest_geom'] = mv.apply(
-        lambda r: Point(r['lon_dest'],   r['lat_dest']),   axis=1
-    )
-    gdf_moves = gpd.GeoDataFrame(
-        mv, geometry='origin_geom', crs='EPSG:4326'
-    ).to_crs(epsg=3857)
-    logger.info(f"• gdf_moves projeté en EPSG:3857 ({len(gdf_moves)} déplacements)")
+    logger.debug("GeoDataFrame stops créé avec CRS EPSG:4326")
 
-    # 3) utilitaire de recherche du type le plus proche
-    def find_nearest_type(pt: Point) -> str:
-        # calcule toutes les distances (en m)
-        dists = gdf_stops.geometry.distance(pt)
-        within = dists <= max_dist_m
-        count = within.sum()
-        logger.info(f"  - find_nearest_type: {count} candidats ≤ {max_dist_m} m")
-        if count == 0:
+    # 2) Fonction d'assignation de type pour un point
+    def nearest_place(lat, lon):
+        point = Point(lon, lat)
+        # calculer distance à chaque stop
+        gdf_stops['dist'] = gdf_stops.geometry.apply(
+            lambda s: geodesic((lat, lon), (s.y, s.x)).meters
+        )
+        # logging des 5 plus proches pour debug si besoin
+        nearest_five = gdf_stops.nsmallest(5, 'dist')[['place_type', 'dist']]
+        logger.debug(f"nearest_place({lat:.6f},{lon:.6f}) → 5 closest:\n{nearest_five}")
+
+        nearest = gdf_stops.loc[gdf_stops['dist'].idxmin()]
+        if nearest['dist'] <= max_dist_m:
+            logger.info(f"Point ({lat:.6f},{lon:.6f}) rattaché à '{nearest['place_type']}' (dist={nearest['dist']:.1f} m)")
+            return nearest['place_type']
+        else:
+            logger.info(f"Point ({lat:.6f},{lon:.6f}) pas de stop <{max_dist_m} m (min_dist={nearest['dist']:.1f} m) → unknown")
             return 'unknown'
-        idx = dists[within].idxmin()
-        tp = gdf_stops.at[idx, 'place_type']
-        logger.info(f"    → nearest idx={idx}, type={tp}, dist={dists[idx]:.1f} m")
-        return tp
 
-    # 4) Étiqueter origin_type
-    gdf_moves['origin_type'] = gdf_moves.geometry.apply(find_nearest_type)
-    logger.info("• origin_type étiquetés")
+    # 3) Appliquer pour origine et destination
+    moves = moves.copy()
+    if moves.empty:
+        logger.warning("moves vide, je rajoute directly 'unknown' pour origin_type et destination_type")
+        moves['origin_type'] = 'unknown'
+        moves['destination_type'] = 'unknown'
+    else:
+        logger.info("Étiquetage origin_type")
+        moves['origin_type'] = moves.apply(
+            lambda r: nearest_place(r['lat_origin'], r['lon_origin']),
+            axis=1
+        )
+        logger.info("Étiquetage destination_type")
+        moves['destination_type'] = moves.apply(
+            lambda r: nearest_place(r['lat_dest'], r['lon_dest']),
+            axis=1
+        )
 
-    # 5) Passer à dest_geom + étiqueter destination_type
-    gdf_moves = gdf_moves.set_geometry('dest_geom')
-    gdf_moves['destination_type'] = gdf_moves.geometry.apply(find_nearest_type)
-    logger.info("• destination_type étiquetés")
+    # 4) Transition
+    moves['transition'] = moves['origin_type'] + ' → ' + moves['destination_type']
+    logger.info("Transitions construites")
 
-    # 6) Nettoyage et sortie
-    res = gdf_moves.to_crs(epsg=4326).copy()
-    res = res.drop(columns=['origin_geom', 'dest_geom'])
-    res['transition'] = res['origin_type'] + ' → ' + res['destination_type']
+    # # 5) Calculer des distances selon les types
+    # def calc_distance_with_type(row, type1):
+    #     """Calcule la distance si au moins un des deux lieux est type1 (Home ou Work)."""
+    #     if type1 in {row.origin_type, row.destination_type}:
+    #         return geodesic(
+    #             (row.lat_origin, row.lon_origin),
+    #             (row.lat_dest,   row.lon_dest)
+    #         ).meters
+    #     return None
 
-    logger.info(f"◀ Sortie tag_moves_with_stop_types | {len(res)} moves étiquetés")
-    return res.reset_index(drop=True)
+    # moves['dist_from_home'] = moves.apply(lambda r: calc_distance_with_type(r, 'Home'), axis=1)
+    # moves['dist_from_work'] = moves.apply(lambda r: calc_distance_with_type(r, 'Work'), axis=1)
+
+    return moves.reset_index(drop=True)
+
+def snap_moves_to_home_work(moves, final_stops, max_dist_m=150):
+    """
+    Crée une copie des moves et remplace les coordonnées des points proches de Home/Work
+    par celles de Home/Work, sans modifier le DataFrame original.
+    Ajoute :
+        - snapped (bool) : True si recalé
+        - snapped_origin_type / snapped_destination_type : Home/Work si recalé
+    """
+    moves_copy = moves.copy()
+    moves_copy['snapped'] = False
+    moves_copy['snapped_origin_type'] = None
+    moves_copy['snapped_destination_type'] = None
+
+    # Récupération des coordonnées
+    if 'Home' not in final_stops['place_type'].values or 'Work' not in final_stops['place_type'].values:
+        return moves_copy
+
+    home = final_stops.loc[final_stops['place_type'] == 'Home', ['lat', 'lon']].iloc[0].to_dict()
+    work = final_stops.loc[final_stops['place_type'] == 'Work', ['lat', 'lon']].iloc[0].to_dict()
+
+    for idx, row in moves_copy.iterrows():
+        # Origine
+        if geodesic((row.lat_origin, row.lon_origin), (home['lat'], home['lon'])).meters <= max_dist_m:
+            moves_copy.at[idx, 'lat_origin'] = home['lat']
+            moves_copy.at[idx, 'lon_origin'] = home['lon']
+            moves_copy.at[idx, 'snapped'] = True
+            moves_copy.at[idx, 'snapped_origin_type'] = 'Home'
+        elif geodesic((row.lat_origin, row.lon_origin), (work['lat'], work['lon'])).meters <= max_dist_m:
+            moves_copy.at[idx, 'lat_origin'] = work['lat']
+            moves_copy.at[idx, 'lon_origin'] = work['lon']
+            moves_copy.at[idx, 'snapped'] = True
+            moves_copy.at[idx, 'snapped_origin_type'] = 'Work'
+
+        # Destination
+        if geodesic((row.lat_dest, row.lon_dest), (home['lat'], home['lon'])).meters <= max_dist_m:
+            moves_copy.at[idx, 'lat_dest'] = home['lat']
+            moves_copy.at[idx, 'lon_dest'] = home['lon']
+            moves_copy.at[idx, 'snapped'] = True
+            moves_copy.at[idx, 'snapped_destination_type'] = 'Home'
+        elif geodesic((row.lat_dest, row.lon_dest), (work['lat'], work['lon'])).meters <= max_dist_m:
+            moves_copy.at[idx, 'lat_dest'] = work['lat']
+            moves_copy.at[idx, 'lon_dest'] = work['lon']
+            moves_copy.at[idx, 'snapped'] = True
+            moves_copy.at[idx, 'snapped_destination_type'] = 'Work'
+
+    return moves_copy

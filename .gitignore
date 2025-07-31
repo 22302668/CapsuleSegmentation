@@ -7,6 +7,6 @@ import_clean_data.bat
 import_data.py
 /output/
 /out/
-/participant-data-semain43/
 /stt_input/
 /Mobispace/
+
