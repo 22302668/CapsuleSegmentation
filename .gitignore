@@ -1,0 +1,12 @@
+/my-home-is-my-secret/
+.env
+.gitignore
+/Script2_Amir/
+activityimport.py
+import_clean_data.bat
+import_data.py
+/output/
+/out/
+/stt_input/
+/Mobispace/
+
